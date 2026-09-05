@@ -20,8 +20,25 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# ---- 설정 (환경변수로 오버라이드) ----
+# ---- .env 자동 로드 (직접 실행해도 설정이 적용되도록) ----
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_dotenv():
+    envf = ROOT / ".env"
+    if not envf.exists():
+        return
+    for line in envf.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
+# ---- 설정 (환경변수로 오버라이드) ----
 OURA_BIN = os.environ.get(
     "OURA_BIN",
     str(Path.home() / "workspaces/toy-projects/open_oura/target/release/oura"),

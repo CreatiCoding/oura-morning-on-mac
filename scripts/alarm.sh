@@ -105,12 +105,15 @@ if [ -n "${PUSHCUT_WEBHOOK:-}" ]; then
 elif [ -n "${NTFY_TOPIC:-}" ]; then
   METHOD="ntfy"
 else
-  METHOD="local"; LOCAL_SOUND=1
+  METHOD="none"   # 아이폰 알림수단 없음. 맥 스피커는 자동으로 켜지 않음(서버용).
 fi
 echo "  알림 수단: $METHOD"
+if [ "$METHOD" = "none" ] && [ "$LOCAL_SOUND" != "1" ]; then
+  echo "  ⚠️ 아이폰 알림수단(iMessage/Pushcut/ntfy) 미설정 — 울릴 곳이 없음. .env 확인 필요."
+fi
 
 # 반복 발송
-if [ "$METHOD" != "local" ]; then
+if [ "$METHOD" != "local" ] && [ "$METHOD" != "none" ]; then
   while [ "$(date +%s)" -lt "$END" ]; do
     sent=$((sent + 1))
     if [ "$METHOD" = "Pushcut" ]; then push_pushcut "$REASON (#$sent)" || true
