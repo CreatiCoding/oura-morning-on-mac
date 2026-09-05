@@ -1,0 +1,12 @@
+# secrets — 절대 커밋 금지
+key.hex
+*.hex
+.env
+
+# local data
+*.db
+*.jsonl
+logs/
+
+# local binary link
+bin/
