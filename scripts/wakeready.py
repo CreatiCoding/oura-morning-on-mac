@@ -298,8 +298,12 @@ def main():
             log("폴링 실패 — 링 연결/인증 확인 필요 (아이폰 BT off, 링 착용/충전)")
         else:
             fire, reason = check_wake(hours, est)
-            log(f"판정 결과: {'🔔 기상조건 충족' if fire else '⏳ 아직 대기'}",
-                would_fire=fire, reason=reason)
+            # --once 는 스냅샷이라 세션 가드가 없음. 완료된 수면이면 '지난밤 데이터' 경고.
+            if bp is not None and hours >= TARGET_SLEEP_HOURS:
+                print("           ⚠️ 이 기록은 이미 완료된 수면(≥목표)입니다. 밤 세션(tonight.sh)에선"
+                      " '지난밤 데이터'로 무시되고 오늘 새 수면에만 반응합니다.", flush=True)
+            log(f"판정 결과: {'🔔 기상조건 충족' if fire else '⏳ 아직 대기'} "
+                f"(--once 스냅샷, 세션 가드 미적용)", would_fire=fire, reason=reason)
         return
 
     # 지난밤 데이터 가드: 세션 시작 시 이미 완료된(≥목표) 수면기록의 start_ds 를 stale 로 표시.
