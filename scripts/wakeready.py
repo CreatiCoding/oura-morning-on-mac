@@ -364,7 +364,11 @@ if __name__ == "__main__":
         log("사용자 중단(Ctrl+C)")
         sys.exit(130)
     except Exception as e:
-        # 어떤 예외에도 최소한 알람은 울린다 (신뢰성 최우선)
+        # 실제 야간 세션에서만 예외 시 폴백 알람(놓치면 안 됨).
+        # 테스트/확인 모드(--once/--test-alarm/--dry-run)에선 알람을 울리지 않는다.
+        if TEST_ONCE or TEST_ALARM or DRY_RUN:
+            log("예외 발생 (테스트 모드 — 알람 안 울림)", error=str(e))
+            sys.exit(1)
         log("치명적 예외 — 폴백 알람", error=str(e))
         fire_alarm("WakeReady 내부 오류 — 폴백 기상")
         sys.exit(1)
