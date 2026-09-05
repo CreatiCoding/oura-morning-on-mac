@@ -43,6 +43,22 @@ cp .env.example .env        # 설정 채우기 (값은 .env, gitignore됨)
 ./scripts/tonight.sh
 ```
 취침 전: **링 착용** 💍 · **아이폰 블루투스 OFF**(맥이 링 점유) · **아이폰 무음 OFF**.
+(맥 잠들지 않게: `caffeinate -s ./scripts/tonight.sh`)
+
+## 스크립트 실행법
+| 명령 | 설명 |
+|------|------|
+| `./scripts/tonight.sh` | 야간 세션 시작 (`.env` 설정 사용). 매 폴링마다 누적 수면·품질 실시간 출력 |
+| `./scripts/setup.sh` | 최초 셋업 (open_oura 빌드 + `./bin/oura` 링크) |
+| `python scripts/wakeready.py --once` | 1회 폴링 → 현재 수면상태/판정만 보고 종료 |
+| `python scripts/wakeready.py --test-alarm` | 즉시 알람만 발동 (알람 경로 테스트) |
+| `python scripts/wakeready.py --simulate=8.2 --dry-run` | 링/알람 없이 판정 로직만 테스트 |
+| `python scripts/wakeready.py --poll=30` | 폴링 간격 30초로 빠른 테스트 |
+| `bash scripts/alarm.sh "메시지"` | 알람 단독 실행 |
+| `./bin/oura --key-file key.hex info` | 링 연결/인증 확인 (배터리 읽히면 정상) |
+
+> 플래그: `--once` `--test-alarm` `--dry-run` `--simulate=H` `--poll=SEC` `--verbose` (조합 가능).
+> 상세는 [USAGE.md](USAGE.md).
 
 ## 주요 설정 (.env)
 | 키 | 설명 | 기본 |
