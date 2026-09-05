@@ -35,14 +35,37 @@ end tell
 OSA
 }
 
-# 0) iMessage 트리거 (최우선) — 아이폰 단축어가 노래/유튜브 재생
+ack_seen() {  # $1=since(unix). 아이폰 단축어가 보낸 PLAYED 신호 수신 여부
+  [ -n "${NTFY_ACK_TOPIC:-}" ] || return 1
+  curl -s -m 8 "https://ntfy.sh/${NTFY_ACK_TOPIC}/json?poll=1&since=$1" 2>/dev/null \
+    | grep -q 'PLAYED'
+}
+
+# 0) iMessage 트리거 (최우선) — 아이폰 단축어가 노래/유튜브 재생 + ACK 확인
+ACKED=0
 if [ -n "${IMESSAGE_TARGET:-}" ]; then
   reps="${IMESSAGE_REPEAT:-3}"; gap="${IMESSAGE_GAP_SEC:-20}"
-  echo "  iMessage 트리거 '$TRIGGER' → $IMESSAGE_TARGET (${reps}회)"
+  ack_wait="${ACK_WAIT_SEC:-30}"
+  echo "  iMessage 트리거 '$TRIGGER' → $IMESSAGE_TARGET (최대 ${reps}회, ACK 대기)"
   for i in $(seq 1 "$reps"); do
+    since=$(date +%s)
     send_imessage "$IMESSAGE_TARGET" "$TRIGGER" && echo "    전송 $i/$reps" || echo "    전송 $i 실패"
-    [ "$i" -lt "$reps" ] && sleep "$gap"
+    if [ -n "${NTFY_ACK_TOPIC:-}" ]; then
+      # ACK 폴링 (3초 간격, ack_wait 초까지)
+      waited=0
+      while [ "$waited" -lt "$ack_wait" ]; do
+        sleep 3; waited=$((waited + 3))
+        if ack_seen "$since"; then ACKED=1; echo "    ✅ 아이폰 재생 확인(ACK)"; break; fi
+      done
+      [ "$ACKED" = "1" ] && break
+      echo "    ⚠️ ACK 없음 — 재전송"
+    else
+      [ "$i" -lt "$reps" ] && sleep "$gap"
+    fi
   done
+  if [ -n "${NTFY_ACK_TOPIC:-}" ] && [ "$ACKED" = "0" ]; then
+    echo "  ❌ 모든 iMessage 후에도 ACK 없음 → 폴백 알림 에스컬레이션"
+  fi
 fi
 
 # 0b) 대안 노래 트리거들
@@ -57,8 +80,10 @@ if [ -n "${LOCAL_SONG:-}" ] && [ -f "$LOCAL_SONG" ]; then
   ( while [ "$(date +%s)" -lt "$END" ]; do afplay "$LOCAL_SONG" 2>/dev/null; done ) &
 fi
 
-# iMessage/노래 트리거가 하나라도 있으면 푸시 알림 반복은 생략 (중복 방지)
-if [ -n "${IMESSAGE_TARGET:-}${PUSHCUT_EXEC_URL:-}${LOCAL_SONG:-}" ]; then
+# 트리거 성공 시 종료. 단 ACK 방식인데 확인 실패면 폴백 알림으로 에스컬레이션.
+if [ -n "${NTFY_ACK_TOPIC:-}" ] && [ -n "${IMESSAGE_TARGET:-}" ] && [ "${ACKED:-0}" = "0" ]; then
+  : # ACK 실패 → 아래 폴백 푸시/사운드로 진행
+elif [ -n "${IMESSAGE_TARGET:-}${PUSHCUT_EXEC_URL:-}${LOCAL_SONG:-}" ]; then
   echo "[$(date '+%H:%M:%S')] 알람 트리거 완료"
   exit 0
 fi

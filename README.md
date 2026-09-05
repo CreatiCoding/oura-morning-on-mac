@@ -33,8 +33,10 @@ cp .env.example .env        # 설정 채우기 (값은 .env, gitignore됨)
 
 ### 3. 아이폰 알람 자동화 (1회)
 단축어 앱 → 자동화 → **메시지** → "메시지 포함 내용"=`WAKEREADY` → **즉시 실행**
-→ 동작: `볼륨 100% 설정` → `URL 열기`(유튜브) 또는 `음악 재생`.
-`.env`에 `IMESSAGE_TARGET`(아이폰 번호) 설정.
+→ 동작: `볼륨 100% 설정` → `URL 열기`(유튜브) 또는 `음악 재생`
+→ (선택·권장) 마지막에 **재생 확인 신호**: `URL의 콘텐츠 가져오기` POST `https://ntfy.sh`,
+  JSON 본문 `{topic: <NTFY_ACK_TOPIC>, message: PLAYED}` → 맥이 실제 재생을 확인(ACK).
+`.env`에 `IMESSAGE_TARGET`(아이폰 번호), `NTFY_ACK_TOPIC` 설정.
 
 ### 4. 매일 밤 실행
 ```bash
