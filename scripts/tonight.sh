@@ -20,4 +20,4 @@ echo "=================================================="
 PY=python3
 [ -x .venv/bin/python ] && PY=.venv/bin/python
 
-exec "$PY" scripts/wakeready.py
+exec "$PY" scripts/wakeready.py "$@"

@@ -83,6 +83,7 @@ TEST_ONCE = _flag("--once")
 TEST_ALARM = _flag("--test-alarm")
 DRY_RUN = _flag("--dry-run")
 VERBOSE = _flag("--verbose")
+TUI = _flag("--tui")
 SIMULATE_HOURS = _opt("--simulate", float, None)
 _poll_override = _opt("--poll", float, None)
 if _poll_override is not None:
@@ -91,6 +92,12 @@ if _poll_override is not None:
 
 def log(msg, **fields):
     ts = datetime.now().isoformat(timespec="seconds")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    rec = {"ts": ts, "msg": msg, **fields}
+    with open(LOG_DIR / "wakeready.jsonl", "a") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    if TUI:   # TUI 모드에선 카드만 그리고, 로그는 파일에만
+        return
     # 터미널엔 주요 필드도 함께 보이도록 요약
     extra = " ".join(f"{k}={v}" for k, v in fields.items()
                      if k != "estimate" and v is not None)
@@ -102,10 +109,6 @@ def log(msg, **fields):
               f"REM{e.get('rem_min')}분({e.get('rem_pct')}%) "
               f"깊은{e.get('deep_min')}분({e.get('deep_pct')}%) "
               f"얕은{e.get('light_min')}분 깬{e.get('awake_min')}분", flush=True)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    rec = {"ts": ts, "msg": msg, **fields}
-    with open(LOG_DIR / "wakeready.jsonl", "a") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def cap_datetime():
@@ -134,7 +137,8 @@ def poll_once():
     주의: 링은 연속 재연결에 약하다. sleep-analyze 직후 곧바로 sync 하면 재광고 전이라
     'no matching ring' 또는 인증거부가 난다. → 명령 사이 딜레이 + sync 재시도로 완화.
     """
-    print("           🔗 링 연결·수면분석·동기화 중... (30초~2분 소요)", flush=True)
+    if not TUI:
+        print("           🔗 링 연결·수면분석·동기화 중... (30초~2분 소요)", flush=True)
     t0 = time.time()
     try:
         run_oura("sleep-analyze", "--force")  # 링이 분석을 돌리도록 요청(best-effort)
@@ -146,14 +150,15 @@ def poll_once():
         try:
             r = run_oura("sync")
             if r.returncode == 0:
-                print(f"           ⟳ 동기화 완료 ({time.time()-t0:.0f}초)", flush=True)
+                if not TUI:
+                    print(f"           ⟳ 동기화 완료 ({time.time()-t0:.0f}초)", flush=True)
                 break
             err = (r.stderr or "")[-160:]
         except Exception as e:
             err = str(e)
         if attempt < SYNC_RETRIES:
-            print(f"           ↻ sync 재시도 {attempt}/{SYNC_RETRIES-1} "
-                  f"({BLE_GAP_SEC:.0f}초 후)...", flush=True)
+            if not TUI:
+                print(f"           ↻ sync 재시도 {attempt}/{SYNC_RETRIES-1} ({BLE_GAP_SEC:.0f}초 후)...", flush=True)
             time.sleep(BLE_GAP_SEC)
         else:
             log("sync 실패 (링 연결 확인: 아이폰 BT off, 링 착용, 맥 근처)", stderr=err)
@@ -271,6 +276,40 @@ def quality_label(est):
     return f"{tag} (효율 {eff:.0f}%)"
 
 
+def render_tui(*, phase, hours=None, est=None, status="", cap=None, next_poll=None):
+    """ANSI 기반 라이브 카드(의존성 0). 화면을 지우고 제자리에 다시 그린다."""
+    W = 46
+    def rule(mid=""):
+        if not mid:
+            return "─" * W
+        pad = W - 2 - len(mid)
+        return "─" * 3 + f" {mid} " + "─" * max(0, pad - 3)
+    lines = []
+    mode = "건강모드" if HEALTHY_MODE else f"총{TARGET_SLEEP_HOURS:.0f}h"
+    lines.append(rule(f"WakeReady · {mode}" + (" · DRY" if DRY_RUN else "")))
+    if phase == "syncing":
+        lines.append(" 🔗 링 연결·동기화 중...")
+    elif hours is not None:
+        lines.append(f" 💤 수면   {hours:4.1f}h  [{_bar(hours, TARGET_SLEEP_HOURS)}] / {TARGET_SLEEP_HOURS:.0f}h")
+        if est:
+            lines.append(f" 🧠 품질   {quality_label(est)}")
+            lines.append(f" 📊 단계   REM {est['rem_min']}분({est['rem_pct']}%) · "
+                         f"깊은 {est['deep_min']}분({est['deep_pct']}%) · 깬 {est['awake_min']}분")
+    if status:
+        lines.append(f" 🎯 상태   {status}")
+    foot = []
+    if cap is not None:
+        foot.append(f"상한 {cap.strftime('%H:%M')}")
+    if next_poll is not None:
+        foot.append(f"다음 {next_poll.strftime('%H:%M:%S')}")
+    foot.append(f"now {datetime.now().strftime('%H:%M:%S')}")
+    lines.append(" ⏰ " + "  ·  ".join(foot))
+    lines.append(rule())
+    sys.stdout.write("\033[2J\033[H")           # clear + home
+    sys.stdout.write("\n".join(lines) + "\n")
+    sys.stdout.flush()
+
+
 def do_poll():
     """한 번 폴링 + 친근한 실시간 상태 출력. (hours, est, bp) 반환. bp=최신 bedtime_period dict."""
     if SIMULATE_HOURS is not None:
@@ -282,13 +321,14 @@ def do_poll():
         return None, None, None
     est = estimate_stages() if HEALTHY_MODE else None
 
-    # 터미널 실시간 요약(누적 수면 + 품질)
+    # 터미널 실시간 요약(누적 수면 + 품질) — TUI 모드에선 카드가 대신함
     remain = max(0.0, TARGET_SLEEP_HOURS - hours)
-    print(f"           💤 지금까지 {hours:.1f}h  [{_bar(hours, TARGET_SLEEP_HOURS)}] "
-          f"목표 {TARGET_SLEEP_HOURS:.0f}h까지 {remain:.1f}h", flush=True)
-    if est:
-        print(f"           🧠 {quality_label(est)} | REM {est['rem_min']}분({est['rem_pct']}%) · "
-              f"깊은 {est['deep_min']}분({est['deep_pct']}%) · 깬 {est['awake_min']}분", flush=True)
+    if not TUI:
+        print(f"           💤 지금까지 {hours:.1f}h  [{_bar(hours, TARGET_SLEEP_HOURS)}] "
+              f"목표 {TARGET_SLEEP_HOURS:.0f}h까지 {remain:.1f}h", flush=True)
+        if est:
+            print(f"           🧠 {quality_label(est)} | REM {est['rem_min']}분({est['rem_pct']}%) · "
+                  f"깊은 {est['deep_min']}분({est['deep_pct']}%) · 깬 {est['awake_min']}분", flush=True)
 
     # 미충족 사유
     if HEALTHY_MODE and est:
@@ -351,10 +391,14 @@ def main():
             fire_alarm(f"안전 상한 시각({CAP_TIME}) 도달 — 무조건 기상")
             break
 
+        if TUI:
+            render_tui(phase="syncing", cap=cap)
         hours, est, bp = do_poll()
+        status = ""
         if hours is None:
             fails += 1
             log("폴링 실패", consecutive_fails=fails)
+            status = f"⚠️ 링 연결 실패 ({fails}회)"
             if fails >= MAX_FAILS_BEFORE_FALLBACK and to_cap <= timedelta(minutes=30):
                 fire_alarm("연결 실패 누적 + 상한 임박 — 폴백 기상")
                 break
@@ -363,9 +407,13 @@ def main():
             if is_stale(bp):
                 gap = sleep_end_gap_hours(bp)
                 log(f"⏸️ 지난 수면 무시 중 (종료 {gap:.1f}시간 전) — 오늘 새 수면 대기")
+                status = f"⏸️ 지난 수면 (종료 {gap:.1f}h 전) — 오늘 수면 대기"
             else:
                 fire, reason = check_wake(hours, est)
+                status = "🔔 기상!" if fire else "⏳ 목표까지 대기 중"
                 if fire:
+                    if TUI:
+                        render_tui(phase="result", hours=hours, est=est, status=status, cap=cap)
                     fire_alarm(reason)
                     if not DRY_RUN:
                         break
@@ -374,8 +422,12 @@ def main():
         sleep_s = POLL_INTERVAL_MIN * 60
         remaining = (cap - datetime.now()).total_seconds()
         wait = max(5, min(sleep_s, remaining))
-        nxt = (datetime.now() + timedelta(seconds=wait)).strftime("%H:%M:%S")
-        log(f"다음 폴링 {nxt} (약 {int(wait//60)}분 후)")
+        nxt = datetime.now() + timedelta(seconds=wait)
+        if TUI:
+            render_tui(phase="result", hours=hours, est=est, status=status,
+                       cap=cap, next_poll=nxt)
+        else:
+            log(f"다음 폴링 {nxt.strftime('%H:%M:%S')} (약 {int(wait//60)}분 후)")
         time.sleep(wait)
 
     log("세션 종료 (링 연결은 sync 종료 시 해제됨)")

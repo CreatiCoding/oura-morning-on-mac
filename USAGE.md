@@ -62,6 +62,7 @@ python scripts/wakeready.py --dry-run         # 루프 정상, 단 조건 충족
 python scripts/wakeready.py --simulate=8.5    # 수면시간 가정(링 없이 판정 로직 테스트)
 python scripts/wakeready.py --poll=30         # 폴링 간격 30초로 강제(빠른 테스트)
 python scripts/wakeready.py --verbose         # 상세 로그
+python scripts/wakeready.py --tui             # 예쁜 TUI 카드로 실시간 표시
 # 조합 예: 링/알람 없이 판정만 빠르게
 python scripts/wakeready.py --once --simulate=8.2 --dry-run
 ```

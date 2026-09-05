@@ -29,6 +29,7 @@ cp .env.example .env        # 설정 채우기 (자세한 항목은 .env.example
 
 ```bash
 caffeinate -s ./scripts/tonight.sh          # 야간 세션 (맥 안 자게 + 실시간 상태 출력)
+caffeinate -s ./scripts/tonight.sh --tui    # 예쁜 TUI 카드로 실시간 표시
 ```
 `caffeinate -s`로 감싸야 **밤새 맥이 잠들지 않아** 폴링이 끊기지 않는다. (안 감싸면 화면 꺼질 때 세션 멈출 수 있음)
 
