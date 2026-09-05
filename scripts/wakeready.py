@@ -37,6 +37,15 @@ CAP_TIME = os.environ.get("CAP_TIME", "09:00")          # HH:MM, 안전 상한
 SCAN_TIMEOUT = os.environ.get("SCAN_TIMEOUT", "25")
 MAX_FAILS_BEFORE_FALLBACK = int(os.environ.get("MAX_FAILS_BEFORE_FALLBACK", "6"))
 
+# 건강 수면 모드: 총시간 + REM/깊은수면 추정치 충족 시 기상 (모델 없이 휴리스틱 추정)
+# 기본 off. 켜도 안전 상한 시각은 항상 보장되어 늦잠 위험 없음.
+HEALTHY_MODE = os.environ.get("HEALTHY_MODE", "0") == "1"
+# 기본값은 사용자 실측(REM 79분·깊은 67분 @7.14h)에 맞춰 achievable하게 설정.
+# 교과서 권장은 REM 90~120·깊은 70~120이나, 그러면 거의 미달→상한까지 대기하므로
+# 며칠 로그로 본인 기준에 맞게 상향 튜닝할 것.
+REM_MIN_MIN = float(os.environ.get("REM_MIN_MIN", "70"))
+DEEP_MIN_MIN = float(os.environ.get("DEEP_MIN_MIN", "55"))
+
 
 def log(msg, **fields):
     ts = datetime.now().isoformat(timespec="seconds")
@@ -79,6 +88,22 @@ def poll_once():
         log("sync 예외", error=str(e))
         return None
     return latest_sleep_hours()
+
+
+def estimate_stages():
+    """sleep_estimate 로 REM/깊은수면 추정. 실패 시 None."""
+    try:
+        import importlib.util
+        p = Path(__file__).resolve().parent / "sleep_estimate.py"
+        spec = importlib.util.spec_from_file_location("sleep_estimate", p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        epochs = m.load_epochs(DB)
+        stages = m.classify(epochs)
+        return m.summarize(stages) if stages else None
+    except Exception as e:
+        log("수면단계 추정 실패", error=str(e))
+        return None
 
 
 def latest_sleep_hours():
@@ -133,10 +158,20 @@ def main():
                 break
         else:
             fails = 0
+            # 건강 모드면 단계 추정치도 매 폴링 기록(사후 보정용)
+            est = estimate_stages() if HEALTHY_MODE else None
             log("수면 상태", detected_sleep_hours=round(hours, 2),
-                target=TARGET_SLEEP_HOURS)
+                target=TARGET_SLEEP_HOURS, estimate=est)
             # 안전장치 1: 목표 도달
-            if hours >= TARGET_SLEEP_HOURS:
+            if HEALTHY_MODE:
+                if est and hours >= TARGET_SLEEP_HOURS \
+                        and est["rem_min"] >= REM_MIN_MIN \
+                        and est["deep_min"] >= DEEP_MIN_MIN:
+                    fire_alarm(
+                        f"건강 수면 충족 — 총 {hours:.2f}h, REM {est['rem_min']}분, "
+                        f"깊은 {est['deep_min']}분 (추정) — 기상!")
+                    break
+            elif hours >= TARGET_SLEEP_HOURS:
                 fire_alarm(f"목표 수면 {TARGET_SLEEP_HOURS}h 충족 (감지 {hours:.2f}h) — 기상!")
                 break
 
