@@ -126,6 +126,8 @@ def run_oura(*args, capture=True):
 
 def poll_once():
     """sleep-analyze + sync 후 최신 bedtime_period duration_hours 반환. 실패 시 None."""
+    print("           🔗 링 연결·수면분석·동기화 중... (30초~2분 소요)", flush=True)
+    t0 = time.time()
     try:
         run_oura("sleep-analyze", "--force")  # 링이 분석을 돌리도록 요청(best-effort)
     except Exception as e:
@@ -133,8 +135,10 @@ def poll_once():
     try:
         r = run_oura("sync")
         if r.returncode != 0:
-            log("sync 실패", stderr=(r.stderr or "")[-300:])
+            log("sync 실패 (링 연결 확인: 아이폰 BT off, 링 착용/충전)",
+                stderr=(r.stderr or "")[-200:])
             return None
+        print(f"           ⟳ 동기화 완료 ({time.time()-t0:.0f}초)", flush=True)
     except Exception as e:
         log("sync 예외", error=str(e))
         return None
