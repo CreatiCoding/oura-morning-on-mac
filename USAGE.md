@@ -45,6 +45,27 @@ Oura 링 데이터로 "충분히 잤을 때" 아이폰 알람(노래/유튜브)�
 3. 연결 실패 누적 + 상한 임박 → 조기 폴백 알람
 4. 스크립트 예외 → 폴백 알람
 
+## 실시간 출력
+세션 중 매 폴링마다 터미널에 누적 수면·품질이 표시된다:
+```
+💤 지금까지 6.5h  [████████████████░░░░] 목표 8h까지 1.5h
+🧠 😴 잘 자는 중 (효율 91%) | REM 92분(21%) · 깊은 78분(18%) · 깬 20분
+수면 판정 — ⏳ 부족: REM 대기 ...
+다음 폴링 07:20:00 (약 10분 후)
+```
+
+## 테스트/디버그 플래그
+```bash
+python scripts/wakeready.py --once            # 1회만 폴링→현재 상태/판정 출력 후 종료
+python scripts/wakeready.py --test-alarm      # 즉시 알람만 발동(알람 경로 테스트)
+python scripts/wakeready.py --dry-run         # 루프 정상, 단 조건 충족 시 실제 알람 대신 로그
+python scripts/wakeready.py --simulate=8.5    # 수면시간 가정(링 없이 판정 로직 테스트)
+python scripts/wakeready.py --poll=30         # 폴링 간격 30초로 강제(빠른 테스트)
+python scripts/wakeready.py --verbose         # 상세 로그
+# 조합 예: 링/알람 없이 판정만 빠르게
+python scripts/wakeready.py --once --simulate=8.2 --dry-run
+```
+
 ## 수동 테스트
 ```bash
 set -a; . ./.env; set +a

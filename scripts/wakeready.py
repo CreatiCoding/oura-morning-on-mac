@@ -46,11 +46,45 @@ HEALTHY_MODE = os.environ.get("HEALTHY_MODE", "0") == "1"
 REM_MIN_MIN = float(os.environ.get("REM_MIN_MIN", "70"))
 DEEP_MIN_MIN = float(os.environ.get("DEEP_MIN_MIN", "55"))
 
+# ---- 테스트/디버그 플래그 (CLI) ----
+#   --once         : 폴링 1회만 하고 현재 상태 출력 후 종료 (연결/판정 빠른 점검)
+#   --test-alarm   : 즉시 알람만 발동하고 종료 (알람 경로 테스트)
+#   --dry-run      : 정상 루프지만 조건 충족 시 실제 알람 대신 "발동했을 것" 로그
+#   --simulate=H   : 수면시간을 H로 가정(링 연결 없이 판정 로직 테스트)
+#   --poll=SEC     : 폴링 간격을 SEC초로 강제(빠른 테스트용)
+#   --verbose      : 폴링 원본/상세 로그
+_args = sys.argv[1:]
+def _flag(name): return name in _args
+def _opt(name, cast=str, default=None):
+    pref = name + "="
+    for a in _args:
+        if a.startswith(pref):
+            return cast(a[len(pref):])
+    return default
+
+TEST_ONCE = _flag("--once")
+TEST_ALARM = _flag("--test-alarm")
+DRY_RUN = _flag("--dry-run")
+VERBOSE = _flag("--verbose")
+SIMULATE_HOURS = _opt("--simulate", float, None)
+_poll_override = _opt("--poll", float, None)
+if _poll_override is not None:
+    POLL_INTERVAL_MIN = _poll_override / 60.0
+
 
 def log(msg, **fields):
     ts = datetime.now().isoformat(timespec="seconds")
-    line = f"[{ts}] {msg}"
+    # 터미널엔 주요 필드도 함께 보이도록 요약
+    extra = " ".join(f"{k}={v}" for k, v in fields.items()
+                     if k != "estimate" and v is not None)
+    line = f"[{ts}] {msg}" + (f"  ({extra})" if extra else "")
     print(line, flush=True)
+    if fields.get("estimate"):
+        e = fields["estimate"]
+        print(f"           추정: 총{e.get('total_sleep_hours')}h "
+              f"REM{e.get('rem_min')}분({e.get('rem_pct')}%) "
+              f"깊은{e.get('deep_min')}분({e.get('deep_pct')}%) "
+              f"얕은{e.get('light_min')}분 깬{e.get('awake_min')}분", flush=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     rec = {"ts": ts, "msg": msg, **fields}
     with open(LOG_DIR / "wakeready.jsonl", "a") as f:
@@ -125,60 +159,137 @@ def latest_sleep_hours():
 
 
 def fire_alarm(reason):
-    log("ALARM 발동", reason=reason)
+    if DRY_RUN:
+        log("🔔 [DRY-RUN] 알람을 발동했을 것", reason=reason)
+        return
+    log("🔔 ALARM 발동", reason=reason)
     try:
-        subprocess.run(["bash", ALARM_SH, reason], timeout=200)
+        subprocess.run(["bash", ALARM_SH, reason], timeout=300)
     except Exception as e:
         # 알람 스크립트마저 실패하면 최후의 수단
         log("alarm.sh 실패 — say 폴백", error=str(e))
         os.system('say "Wake up. WakeReady fallback alarm." 2>/dev/null')
 
 
+def check_wake(hours, est):
+    """기상 조건 충족 여부와 사유 문자열. (fire여부, reason)"""
+    if HEALTHY_MODE:
+        if est and hours >= TARGET_SLEEP_HOURS \
+                and est["rem_min"] >= REM_MIN_MIN \
+                and est["deep_min"] >= DEEP_MIN_MIN:
+            return True, (f"건강 수면 충족 — 총 {hours:.2f}h, REM {est['rem_min']}분, "
+                          f"깊은 {est['deep_min']}분 (추정) — 기상!")
+    elif hours >= TARGET_SLEEP_HOURS:
+        return True, f"목표 수면 {TARGET_SLEEP_HOURS}h 충족 (감지 {hours:.2f}h) — 기상!"
+    return False, None
+
+
+def _bar(cur, target, width=20):
+    frac = max(0.0, min(1.0, cur / target)) if target else 0
+    n = int(frac * width)
+    return "█" * n + "░" * (width - n)
+
+
+def quality_label(est):
+    """추정치로 '얼마나 잘 잤나' 한 줄 평가."""
+    if not est:
+        return "?"
+    asleep = est["rem_min"] + est["deep_min"] + est["light_min"]
+    eff = 100 * asleep / (asleep + est["awake_min"]) if (asleep + est["awake_min"]) else 0
+    good = est["rem_pct"] >= 18 and est["deep_pct"] >= 13 and eff >= 85
+    ok = est["rem_pct"] >= 13 and est["deep_pct"] >= 10 and eff >= 78
+    tag = "😴 잘 자는 중" if good else ("🙂 양호" if ok else "😐 뒤척임 많음")
+    return f"{tag} (효율 {eff:.0f}%)"
+
+
+def do_poll():
+    """한 번 폴링 + 친근한 실시간 상태 출력. (hours, est) 반환."""
+    hours = SIMULATE_HOURS if SIMULATE_HOURS is not None else poll_once()
+    if hours is None:
+        return None, None
+    est = estimate_stages() if HEALTHY_MODE else None
+
+    # 터미널 실시간 요약(누적 수면 + 품질)
+    remain = max(0.0, TARGET_SLEEP_HOURS - hours)
+    print(f"           💤 지금까지 {hours:.1f}h  [{_bar(hours, TARGET_SLEEP_HOURS)}] "
+          f"목표 {TARGET_SLEEP_HOURS:.0f}h까지 {remain:.1f}h", flush=True)
+    if est:
+        print(f"           🧠 {quality_label(est)} | REM {est['rem_min']}분({est['rem_pct']}%) · "
+              f"깊은 {est['deep_min']}분({est['deep_pct']}%) · 깬 {est['awake_min']}분", flush=True)
+
+    # 미충족 사유
+    if HEALTHY_MODE and est:
+        need = []
+        if hours < TARGET_SLEEP_HOURS: need.append(f"총{hours:.1f}/{TARGET_SLEEP_HOURS:.0f}h")
+        if est["rem_min"] < REM_MIN_MIN: need.append(f"REM{est['rem_min']}/{REM_MIN_MIN:.0f}분")
+        if est["deep_min"] < DEEP_MIN_MIN: need.append(f"깊은{est['deep_min']}/{DEEP_MIN_MIN:.0f}분")
+        status = "✅ 충족!" if not need else "⏳ 부족: " + ", ".join(need)
+        log(f"수면 판정 — {status}", detected_sleep_hours=round(hours, 2), estimate=est)
+    else:
+        log("수면 상태", detected_sleep_hours=round(hours, 2), target=TARGET_SLEEP_HOURS)
+    return hours, est
+
+
 def main():
     cap = cap_datetime()
-    log("세션 시작", target_hours=TARGET_SLEEP_HOURS, poll_min=POLL_INTERVAL_MIN,
-        cap_time=cap.isoformat(timespec="minutes"), db=DB)
+    mode = "건강모드" if HEALTHY_MODE else f"총{TARGET_SLEEP_HOURS}h"
+    log(f"세션 시작 [{mode}]"
+        + (" [DRY-RUN]" if DRY_RUN else ""),
+        target_hours=TARGET_SLEEP_HOURS, poll_min=round(POLL_INTERVAL_MIN, 2),
+        cap_time=cap.isoformat(timespec="minutes"),
+        rem_min=REM_MIN_MIN if HEALTHY_MODE else None,
+        deep_min=DEEP_MIN_MIN if HEALTHY_MODE else None, db=DB)
+
+    # --- 테스트 모드들 ---
+    if TEST_ALARM:
+        log("[--test-alarm] 즉시 알람 테스트")
+        fire_alarm("테스트 알람 (--test-alarm)")
+        return
+    if TEST_ONCE:
+        log("[--once] 1회 폴링 점검")
+        hours, est = do_poll()
+        if hours is None:
+            log("폴링 실패 — 링 연결/인증 확인 필요 (아이폰 BT off, 링 착용/충전)")
+        else:
+            fire, reason = check_wake(hours, est)
+            log(f"판정 결과: {'🔔 기상조건 충족' if fire else '⏳ 아직 대기'}",
+                would_fire=fire, reason=reason)
+        return
 
     fails = 0
     while True:
         now = datetime.now()
+        to_cap = cap - now
+        if VERBOSE:
+            log(f"폴링 시작 (상한까지 {int(to_cap.total_seconds()//60)}분)")
 
         # 안전장치 2: 상한 시각 도달
         if now >= cap:
             fire_alarm(f"안전 상한 시각({CAP_TIME}) 도달 — 무조건 기상")
             break
 
-        hours = poll_once()
+        hours, est = do_poll()
         if hours is None:
             fails += 1
             log("폴링 실패", consecutive_fails=fails)
-            # 안전장치 3: 실패 누적 + 상한 30분 이내면 조기 폴백
-            if fails >= MAX_FAILS_BEFORE_FALLBACK and (cap - now) <= timedelta(minutes=30):
+            if fails >= MAX_FAILS_BEFORE_FALLBACK and to_cap <= timedelta(minutes=30):
                 fire_alarm("연결 실패 누적 + 상한 임박 — 폴백 기상")
                 break
         else:
             fails = 0
-            # 건강 모드면 단계 추정치도 매 폴링 기록(사후 보정용)
-            est = estimate_stages() if HEALTHY_MODE else None
-            log("수면 상태", detected_sleep_hours=round(hours, 2),
-                target=TARGET_SLEEP_HOURS, estimate=est)
-            # 안전장치 1: 목표 도달
-            if HEALTHY_MODE:
-                if est and hours >= TARGET_SLEEP_HOURS \
-                        and est["rem_min"] >= REM_MIN_MIN \
-                        and est["deep_min"] >= DEEP_MIN_MIN:
-                    fire_alarm(
-                        f"건강 수면 충족 — 총 {hours:.2f}h, REM {est['rem_min']}분, "
-                        f"깊은 {est['deep_min']}분 (추정) — 기상!")
+            fire, reason = check_wake(hours, est)
+            if fire:
+                fire_alarm(reason)
+                if not DRY_RUN:
                     break
-            elif hours >= TARGET_SLEEP_HOURS:
-                fire_alarm(f"목표 수면 {TARGET_SLEEP_HOURS}h 충족 (감지 {hours:.2f}h) — 기상!")
-                break
 
         # 다음 폴링까지 대기 (단, 상한을 넘지 않게)
         sleep_s = POLL_INTERVAL_MIN * 60
         remaining = (cap - datetime.now()).total_seconds()
-        time.sleep(max(5, min(sleep_s, remaining)))
+        wait = max(5, min(sleep_s, remaining))
+        nxt = (datetime.now() + timedelta(seconds=wait)).strftime("%H:%M:%S")
+        log(f"다음 폴링 {nxt} (약 {int(wait//60)}분 후)")
+        time.sleep(wait)
 
     log("세션 종료 (링 연결은 sync 종료 시 해제됨)")
 
