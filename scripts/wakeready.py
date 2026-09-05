@@ -200,6 +200,33 @@ def latest_sleep_hours():
     return float(bp["duration_hours"]) if bp else None
 
 
+STALE_AFTER_HOURS = float(os.environ.get("STALE_AFTER_HOURS", "3"))
+
+
+def sleep_end_gap_hours(bp):
+    """이 수면의 '종료 시점'이 지금(링 최신 이벤트)으로부터 몇 시간 전인지.
+    링 내부시계(deciseconds) 기준. 오늘 자는 중이면 ~0, 지난밤이면 수 시간+."""
+    if not bp:
+        return None
+    import sqlite3
+    try:
+        con = sqlite3.connect(DB)
+        row = con.execute("SELECT MAX(ring_timestamp) FROM events").fetchone()
+        con.close()
+        if not row or row[0] is None:
+            return None
+        gap = (row[0] - bp.get("bedtime_end_ds", 0)) / 10.0 / 3600
+        return gap
+    except Exception:
+        return None
+
+
+def is_stale(bp):
+    """수면 종료가 STALE_AFTER_HOURS 이상 지났으면 지난 수면(현재 세션 아님)."""
+    gap = sleep_end_gap_hours(bp)
+    return gap is not None and gap > STALE_AFTER_HOURS
+
+
 def fire_alarm(reason):
     if DRY_RUN:
         log("🔔 [DRY-RUN] 알람을 발동했을 것", reason=reason)
@@ -297,20 +324,21 @@ def main():
         if hours is None:
             log("폴링 실패 — 링 연결/인증 확인 필요 (아이폰 BT off, 링 착용/충전)")
         else:
-            fire, reason = check_wake(hours, est)
-            # --once 는 스냅샷이라 세션 가드가 없음. 완료된 수면이면 '지난밤 데이터' 경고.
-            if bp is not None and hours >= TARGET_SLEEP_HOURS:
-                print("           ⚠️ 이 기록은 이미 완료된 수면(≥목표)입니다. 밤 세션(tonight.sh)에선"
-                      " '지난밤 데이터'로 무시되고 오늘 새 수면에만 반응합니다.", flush=True)
-            log(f"판정 결과: {'🔔 기상조건 충족' if fire else '⏳ 아직 대기'} "
-                f"(--once 스냅샷, 세션 가드 미적용)", would_fire=fire, reason=reason)
+            gap = sleep_end_gap_hours(bp)
+            if is_stale(bp):
+                print(f"           ⏸️ 지난 수면 데이터입니다 (종료 {gap:.1f}시간 전). "
+                      f"오늘 자면 새 수면으로 갱신돼요. → 지금은 판정 대상 아님.", flush=True)
+                log("판정 결과: 지난 수면(무시 대상)", stale=True,
+                    end_gap_hours=round(gap, 1) if gap is not None else None)
+            else:
+                fire, reason = check_wake(hours, est)
+                log(f"판정 결과: {'🔔 기상조건 충족' if fire else '⏳ 아직 대기'}",
+                    would_fire=fire, reason=reason,
+                    end_gap_hours=round(gap, 1) if gap is not None else None)
         return
 
-    # 지난밤 데이터 가드: 세션 시작 시 이미 완료된(≥목표) 수면기록의 start_ds 를 stale 로 표시.
-    # 그 기록과 동일 세션(start_ds 같음)엔 절대 알람 발동하지 않음 → 오늘 새 수면만 판정.
-    stale_start = None
-    baseline_set = False
-
+    # 지난밤 데이터 가드: 수면 '종료'가 지금으로부터 STALE_AFTER_HOURS 이상 지났으면
+    # 지난 수면으로 보고 알람 미발동. 오늘 자면 종료시점이 ~지금이 되어 판정 대상이 됨.
     fails = 0
     while True:
         now = datetime.now()
@@ -332,17 +360,9 @@ def main():
                 break
         else:
             fails = 0
-            # 첫 성공 폴링에서 기준선 설정: 이미 완료된 수면이면 지난밤 것으로 간주
-            if not baseline_set and bp is not None:
-                baseline_set = True
-                if hours >= TARGET_SLEEP_HOURS:
-                    stale_start = bp.get("bedtime_start_ds")
-                    log("⏸️ 지난밤 데이터 감지 (이미 완료된 수면) — 오늘 새 수면 시작까지 대기",
-                        stale_start=stale_start, detected=round(hours, 2))
-            is_stale = (bp is not None and stale_start is not None
-                        and bp.get("bedtime_start_ds") == stale_start)
-            if is_stale:
-                log("지난밤 기록 무시 중 (오늘 수면 시작 대기)")
+            if is_stale(bp):
+                gap = sleep_end_gap_hours(bp)
+                log(f"⏸️ 지난 수면 무시 중 (종료 {gap:.1f}시간 전) — 오늘 새 수면 대기")
             else:
                 fire, reason = check_wake(hours, est)
                 if fire:
