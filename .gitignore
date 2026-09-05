@@ -10,3 +10,7 @@ logs/
 
 # local binary link
 bin/
+data/
+*.sqlite
+.venv/
+node_modules/
