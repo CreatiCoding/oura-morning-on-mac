@@ -124,24 +124,40 @@ def run_oura(*args, capture=True):
     return subprocess.run(cmd, capture_output=capture, text=True, timeout=180)
 
 
+BLE_GAP_SEC = float(os.environ.get("BLE_GAP_SEC", "12"))   # BLE 명령 사이 재광고 대기
+SYNC_RETRIES = int(os.environ.get("SYNC_RETRIES", "3"))
+
+
 def poll_once():
-    """sleep-analyze + sync 후 최신 bedtime_period duration_hours 반환. 실패 시 None."""
+    """sleep-analyze + sync 후 최신 bedtime_period duration_hours 반환. 실패 시 None.
+
+    주의: 링은 연속 재연결에 약하다. sleep-analyze 직후 곧바로 sync 하면 재광고 전이라
+    'no matching ring' 또는 인증거부가 난다. → 명령 사이 딜레이 + sync 재시도로 완화.
+    """
     print("           🔗 링 연결·수면분석·동기화 중... (30초~2분 소요)", flush=True)
     t0 = time.time()
     try:
         run_oura("sleep-analyze", "--force")  # 링이 분석을 돌리도록 요청(best-effort)
     except Exception as e:
         log("sleep-analyze 실패(무시)", error=str(e))
-    try:
-        r = run_oura("sync")
-        if r.returncode != 0:
-            log("sync 실패 (링 연결 확인: 아이폰 BT off, 링 착용/충전)",
-                stderr=(r.stderr or "")[-200:])
+    # 링이 재광고할 시간을 준다 (핵심: 이게 없으면 sync가 링을 못 찾음)
+    time.sleep(BLE_GAP_SEC)
+    for attempt in range(1, SYNC_RETRIES + 1):
+        try:
+            r = run_oura("sync")
+            if r.returncode == 0:
+                print(f"           ⟳ 동기화 완료 ({time.time()-t0:.0f}초)", flush=True)
+                break
+            err = (r.stderr or "")[-160:]
+        except Exception as e:
+            err = str(e)
+        if attempt < SYNC_RETRIES:
+            print(f"           ↻ sync 재시도 {attempt}/{SYNC_RETRIES-1} "
+                  f"({BLE_GAP_SEC:.0f}초 후)...", flush=True)
+            time.sleep(BLE_GAP_SEC)
+        else:
+            log("sync 실패 (링 연결 확인: 아이폰 BT off, 링 착용, 맥 근처)", stderr=err)
             return None
-        print(f"           ⟳ 동기화 완료 ({time.time()-t0:.0f}초)", flush=True)
-    except Exception as e:
-        log("sync 예외", error=str(e))
-        return None
     return latest_sleep_hours()
 
 
@@ -161,8 +177,8 @@ def estimate_stages():
         return None
 
 
-def latest_sleep_hours():
-    """DB에서 가장 최근 bedtime_period 의 duration_hours 를 읽는다."""
+def latest_bedtime_period():
+    """DB의 가장 최근 bedtime_period 를 dict 로 반환. {bedtime_start_ds, bedtime_end_ds, duration_hours}"""
     import sqlite3
     try:
         con = sqlite3.connect(DB)
@@ -173,10 +189,15 @@ def latest_sleep_hours():
         con.close()
         if not row or not row[0]:
             return None
-        return float(json.loads(row[0]).get("duration_hours"))
+        return json.loads(row[0])
     except Exception as e:
         log("DB 읽기 실패", error=str(e))
         return None
+
+
+def latest_sleep_hours():
+    bp = latest_bedtime_period()
+    return float(bp["duration_hours"]) if bp else None
 
 
 def fire_alarm(reason):
@@ -224,10 +245,14 @@ def quality_label(est):
 
 
 def do_poll():
-    """한 번 폴링 + 친근한 실시간 상태 출력. (hours, est) 반환."""
-    hours = SIMULATE_HOURS if SIMULATE_HOURS is not None else poll_once()
+    """한 번 폴링 + 친근한 실시간 상태 출력. (hours, est, bp) 반환. bp=최신 bedtime_period dict."""
+    if SIMULATE_HOURS is not None:
+        hours, bp = SIMULATE_HOURS, None
+    else:
+        hours = poll_once()
+        bp = latest_bedtime_period() if hours is not None else None
     if hours is None:
-        return None, None
+        return None, None, None
     est = estimate_stages() if HEALTHY_MODE else None
 
     # 터미널 실시간 요약(누적 수면 + 품질)
@@ -248,7 +273,7 @@ def do_poll():
         log(f"수면 판정 — {status}", detected_sleep_hours=round(hours, 2), estimate=est)
     else:
         log("수면 상태", detected_sleep_hours=round(hours, 2), target=TARGET_SLEEP_HOURS)
-    return hours, est
+    return hours, est, bp
 
 
 def main():
@@ -268,7 +293,7 @@ def main():
         return
     if TEST_ONCE:
         log("[--once] 1회 폴링 점검")
-        hours, est = do_poll()
+        hours, est, bp = do_poll()
         if hours is None:
             log("폴링 실패 — 링 연결/인증 확인 필요 (아이폰 BT off, 링 착용/충전)")
         else:
@@ -276,6 +301,11 @@ def main():
             log(f"판정 결과: {'🔔 기상조건 충족' if fire else '⏳ 아직 대기'}",
                 would_fire=fire, reason=reason)
         return
+
+    # 지난밤 데이터 가드: 세션 시작 시 이미 완료된(≥목표) 수면기록의 start_ds 를 stale 로 표시.
+    # 그 기록과 동일 세션(start_ds 같음)엔 절대 알람 발동하지 않음 → 오늘 새 수면만 판정.
+    stale_start = None
+    baseline_set = False
 
     fails = 0
     while True:
@@ -289,7 +319,7 @@ def main():
             fire_alarm(f"안전 상한 시각({CAP_TIME}) 도달 — 무조건 기상")
             break
 
-        hours, est = do_poll()
+        hours, est, bp = do_poll()
         if hours is None:
             fails += 1
             log("폴링 실패", consecutive_fails=fails)
@@ -298,11 +328,23 @@ def main():
                 break
         else:
             fails = 0
-            fire, reason = check_wake(hours, est)
-            if fire:
-                fire_alarm(reason)
-                if not DRY_RUN:
-                    break
+            # 첫 성공 폴링에서 기준선 설정: 이미 완료된 수면이면 지난밤 것으로 간주
+            if not baseline_set and bp is not None:
+                baseline_set = True
+                if hours >= TARGET_SLEEP_HOURS:
+                    stale_start = bp.get("bedtime_start_ds")
+                    log("⏸️ 지난밤 데이터 감지 (이미 완료된 수면) — 오늘 새 수면 시작까지 대기",
+                        stale_start=stale_start, detected=round(hours, 2))
+            is_stale = (bp is not None and stale_start is not None
+                        and bp.get("bedtime_start_ds") == stale_start)
+            if is_stale:
+                log("지난밤 기록 무시 중 (오늘 수면 시작 대기)")
+            else:
+                fire, reason = check_wake(hours, est)
+                if fire:
+                    fire_alarm(reason)
+                    if not DRY_RUN:
+                        break
 
         # 다음 폴링까지 대기 (단, 상한을 넘지 않게)
         sleep_s = POLL_INTERVAL_MIN * 60
