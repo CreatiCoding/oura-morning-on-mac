@@ -344,6 +344,13 @@ def render_tui(*, phase, hours=None, est=None, status="", cap=None, next_poll=No
     foot.append(f"now {datetime.now().strftime('%H:%M:%S')}")
     lines.append(" ⏰ " + "  ·  ".join(foot))
     lines.append(rule())
+    # 웹뷰 QR을 카드 안에 포함 → 매 갱신마다 함께 그려져 계속 보임
+    url, qr = web_url_and_qr()
+    if url:
+        lines.append(f" 🌐 {url}")
+        if qr:
+            lines.append(" 📷 폰으로 스캔 →")
+            lines.append(qr)
     sys.stdout.write("\033[2J\033[H")           # clear + home
     sys.stdout.write("\n".join(lines) + "\n")
     sys.stdout.flush()
@@ -382,8 +389,14 @@ def do_poll(deadline):
     return hours, est, bp
 
 
-def web_banner():
-    """웹뷰 접속 주소 + QR을 세션 시작 시 1회 출력 (폰으로 스캔해서 열기)."""
+_WEB_CACHE = None
+
+
+def web_url_and_qr():
+    """(url, qr문자열) 1회 계산 후 캐시. host 없으면 (None, None)."""
+    global _WEB_CACHE
+    if _WEB_CACHE is not None:
+        return _WEB_CACHE
     port = os.environ.get("WEB_PORT", "8777")
     host = None
     try:
@@ -392,22 +405,29 @@ def web_banner():
     except Exception:
         pass
     url = f"http://{host}.local:{port}" if host else None
+    qr = None
+    if url:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from _qr import qr_ascii
+            qr = qr_ascii(url)
+        except Exception:
+            pass
+    _WEB_CACHE = (url, qr)
+    return _WEB_CACHE
+
+
+def web_banner():
+    """비TUI 모드: 웹뷰 주소 + QR을 세션 시작 시 1회 출력(스크롤에 남음)."""
+    url, qr = web_url_and_qr()
     if not url:
         return
     print("─" * 46)
     print(f"  🌐 웹뷰(같은 와이파이): {url}")
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from _qr import qr_ascii
-        q = qr_ascii(url)
-        if q:
-            print("  📷 폰 카메라로 스캔 →")
-            print(q)
-    except Exception:
-        pass
+    if qr:
+        print("  📷 폰 카메라로 스캔 →")
+        print(qr)
     print("─" * 46)
-    if TUI:
-        time.sleep(4)  # 카드로 넘어가기 전 QR 읽을 시간
 
 
 def main():
@@ -419,8 +439,8 @@ def main():
         cap_time=cap.isoformat(timespec="minutes"),
         rem_min=REM_MIN_MIN if HEALTHY_MODE else None,
         deep_min=DEEP_MIN_MIN if HEALTHY_MODE else None, db=DB)
-    if not (TEST_ONCE or TEST_ALARM):
-        web_banner()
+    if not (TEST_ONCE or TEST_ALARM) and not TUI:
+        web_banner()   # TUI는 카드 안에 QR을 상시 포함하므로 별도 배너 불필요
 
     # --- 테스트 모드들 ---
     if TEST_ALARM:
