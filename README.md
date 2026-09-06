@@ -29,23 +29,18 @@ pip install -r requirements.txt   # (선택) 접속 QR 표시용 qrcode
 ## 실행
 
 ```bash
-caffeinate -s ./scripts/tonight.sh          # 야간 세션 (맥 안 자게 + 실시간 상태 출력)
-caffeinate -s ./scripts/tonight.sh --tui    # 예쁜 TUI 카드로 실시간 표시
+caffeinate -s ./scripts/tonight.sh --tui    # 이거 하나면 끝: 웹서버 + 폴링 + TUI
 ```
-`caffeinate -s`로 감싸야 **밤새 맥이 잠들지 않아** 폴링이 끊기지 않는다. (안 감싸면 화면 꺼질 때 세션 멈출 수 있음)
+`tonight.sh` 하나가 **웹서버와 야간 폴링을 함께 실행**하고, 종료(Ctrl+C) 시 둘 다 자동 정리한다.
+`caffeinate -s`로 감싸야 **밤새 맥이 안 자서** 폴링이 안 끊긴다. (`--tui` 없이 실행하면 스크롤 로그)
 
 취침 전 체크: 링 착용 💍 · 아이폰 블루투스 OFF(맥이 링 점유) · 무음 OFF · **폴링 맥은 침대 BLE 범위(~5m) 내**.
 
-### 웹으로 상태 보기 (같은 와이파이)
-헤드리스 맥미니 상태를 폰/다른 기기 브라우저에서 확인:
-```bash
-python3 scripts/web.py            # 기본 포트 8777
-```
-`tonight.sh`(폴링)와 **별도로** 띄운다. 접속 주소(같은 와이파이):
-- **`http://<맥이름>.local:8777`** ← 권장(IP 바뀌어도 유지). 맥이름: `scutil --get LocalHostName`
-- 또는 `http://<맥IP>:8777` (`ipconfig getifaddr en0`)
-
-자동 새로고침되는 카드로 수면시간·REM/깊은수면·상태가 보인다. (읽기 전용, `logs/status.json` 표시)
+### 웹/QR로 상태 보기 (같은 와이파이)
+실행하면 터미널(TUI 카드/시작 배너)에 **접속 주소 + QR**이 뜬다. 폰 카메라로 QR을 스캔하면 웹뷰가 바로 열림.
+- 주소: **`http://<맥이름>.local:8777`** (IP 바뀌어도 유지)
+- 자동 새로고침 카드로 수면시간·REM/깊은수면·상태 표시 (읽기 전용, `logs/status.json`)
+- 웹서버가 필요 없으면 `WEB=0 ./scripts/tonight.sh`, 포트 변경은 `WEB_PORT=9000`
 
 테스트:
 ```bash
