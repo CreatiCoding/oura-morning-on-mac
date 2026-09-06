@@ -219,6 +219,22 @@ def latest_sleep_hours():
 
 
 STALE_AFTER_HOURS = float(os.environ.get("STALE_AFTER_HOURS", "3"))
+SYNC_REQ = LOG_DIR / "sync_request"   # 웹 '지금 동기화' 버튼이 만드는 요청 플래그
+
+
+def wait_or_sync(seconds):
+    """seconds 동안 대기하되, 웹에서 수동 동기화 요청이 오면 즉시 반환(True)."""
+    end = time.time() + seconds
+    while time.time() < end:
+        if SYNC_REQ.exists():
+            try:
+                SYNC_REQ.unlink()
+            except Exception:
+                pass
+            log("🔄 웹 수동 동기화 요청 — 즉시 폴링")
+            return True
+        time.sleep(min(2, max(0.1, end - time.time())))
+    return False
 
 
 def sleep_end_gap_hours(bp):
@@ -471,6 +487,10 @@ def main():
     fails = 0
     last_hours = None   # 마지막 성공 폴링 기록 (연결 실패 시에도 카드에 계속 표시)
     last_est = None
+    try:                # 세션 시작 시 오래된 수동요청 플래그 제거
+        SYNC_REQ.unlink()
+    except Exception:
+        pass
     while True:
         now = datetime.now()
         to_cap = cap - now
@@ -518,14 +538,15 @@ def main():
         remaining = (min(window_deadline, cap) - datetime.now()).total_seconds()
         wait = max(1, remaining)
         nxt = datetime.now() + timedelta(seconds=wait)
-        # 실패/지난수면이어도 마지막 성공 기록(last_*)을 카드/웹에 계속 표시
-        disp_h = hours if (hours is not None and not is_stale(bp)) else last_hours
-        disp_e = est if (hours is not None and not is_stale(bp)) else last_est
+        # 표시용: 이번 폴링 성공 데이터(지난수면이어도 수치 노출, 상태 라벨로 구분),
+        # 폴링 실패면 마지막 성공 기록 유지
+        disp_h = hours if hours is not None else last_hours
+        disp_e = est if hours is not None else last_est
         show(phase="result", hours=disp_h, est=disp_e, status=status,
              cap=cap, next_poll=nxt)
         if not TUI:
-            log(f"다음 폴링 {nxt.strftime('%H:%M:%S')} (약 {int(wait//60)}분 후)")
-        time.sleep(wait)
+            log(f"다음 폴링 {nxt.strftime('%H:%M:%S')} (약 {int(wait//60)}분 후) · 웹 '지금 동기화'로 앞당기기 가능")
+        wait_or_sync(wait)   # 웹 수동 동기화 요청 오면 즉시 다음 폴링
 
     log("세션 종료 (링 연결은 sync 종료 시 해제됨)")
 

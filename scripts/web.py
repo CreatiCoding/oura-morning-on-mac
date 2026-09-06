@@ -41,8 +41,10 @@ def _lan_ip():
         return None
 
 ROOT = Path(__file__).resolve().parent.parent
-STATUS = Path(os.environ.get("LOG_DIR", str(ROOT / "logs"))) / "status.json"
-PORT = int(os.environ.get("PORT", "8777"))
+LOGD = Path(os.environ.get("LOG_DIR", str(ROOT / "logs")))
+STATUS = LOGD / "status.json"
+SYNC_REQ = LOGD / "sync_request"   # '지금 동기화' 요청 플래그 (wakeready 가 감지)
+PORT = int(os.environ.get("PORT", os.environ.get("WEB_PORT", "8777")))
 
 PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -51,56 +53,85 @@ PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 :root{color-scheme:dark}
 *{box-sizing:border-box}
 body{margin:0;font:16px -apple-system,system-ui,sans-serif;background:#0e1116;color:#e6edf3;
- display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px}
-.card{width:100%;max-width:440px;background:#161b22;border:1px solid #30363d;border-radius:16px;
- padding:22px 24px;box-shadow:0 8px 30px rgba(0,0,0,.4)}
-.hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-.hd b{font-size:18px}.tag{font-size:12px;color:#7d8590;background:#21262d;padding:3px 9px;border-radius:20px}
-.big{font-size:40px;font-weight:700;letter-spacing:-1px}
+ display:flex;min-height:100vh;align-items:flex-start;justify-content:center;padding:20px}
+.card{width:100%;max-width:460px;background:#161b22;border:1px solid #30363d;border-radius:18px;
+ padding:22px 22px 18px;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+.hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.hd b{font-size:19px}.tag{font-size:12px;color:#adbac7;background:#21262d;padding:4px 10px;border-radius:20px}
+.big{font-size:44px;font-weight:800;letter-spacing:-1.5px}.big small{font-size:16px;font-weight:600;color:#7d8590}
 .sub{color:#7d8590;font-size:13px;margin-top:2px}
-.bar{height:12px;background:#21262d;border-radius:6px;overflow:hidden;margin:14px 0 4px}
-.bar>i{display:block;height:100%;background:linear-gradient(90deg,#3fb950,#58a6ff);border-radius:6px;transition:width .5s}
-.row{display:flex;gap:10px;margin-top:14px}
-.stat{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:10px 12px}
-.stat .k{font-size:11px;color:#7d8590}.stat .v{font-size:18px;font-weight:600;margin-top:2px}
-.status{margin-top:16px;padding:12px 14px;background:#0d1117;border-radius:10px;border:1px solid #30363d;font-size:15px}
+.bar{height:14px;background:#21262d;border-radius:7px;overflow:hidden;margin:14px 0 2px;position:relative}
+.bar>i{display:block;height:100%;background:linear-gradient(90deg,#3fb950,#58a6ff);border-radius:7px;transition:width .5s}
+.qual{margin-top:12px;font-size:15px;font-weight:600}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.stat{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:11px 13px}
+.stat .k{font-size:11px;color:#7d8590}.stat .v{font-size:19px;font-weight:700;margin-top:3px}
+.stat .t{font-size:11px;color:#6e7681;margin-top:2px}
+.mini{height:5px;background:#21262d;border-radius:3px;overflow:hidden;margin-top:7px}
+.mini>i{display:block;height:100%;border-radius:3px}
+.status{margin-top:16px;padding:13px 15px;background:#0d1117;border-radius:12px;border:1px solid #30363d;font-size:15px;line-height:1.4}
+.btn{display:block;width:100%;margin-top:14px;padding:14px;border:0;border-radius:12px;
+ background:#238636;color:#fff;font-size:16px;font-weight:700;cursor:pointer}
+.btn:active{background:#2ea043}.btn:disabled{background:#30363d;color:#7d8590}
 .foot{margin-top:14px;color:#7d8590;font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px}
-.off{color:#f85149}
+.off{color:#f85149}.ok{color:#3fb950}
 </style></head><body>
-<div class="card" id="card">
+<div class="card">
   <div class="hd"><b>💤 WakeReady</b><span class="tag" id="mode">—</span></div>
-  <div><span class="big" id="hours">–</span><span class="sub" id="target"></span></div>
+  <div><span class="big"><span id="hours">–</span><small id="target"></small></span></div>
+  <div class="sub" id="remain"></div>
   <div class="bar"><i id="bar" style="width:0%"></i></div>
-  <div class="row" id="stages"></div>
+  <div class="qual" id="qual"></div>
+  <div class="grid" id="stages"></div>
   <div class="status" id="status">연결 대기 중…</div>
-  <div class="foot"><span id="cap"></span><span id="upd"></span></div>
+  <button class="btn" id="sync" onclick="doSync()">🔄 지금 동기화</button>
+  <div class="foot"><span id="meta"></span><span id="upd"></span></div>
 </div>
 <script>
+function eff(e){const a=e.rem_min+e.deep_min+e.light_min;const t=a+e.awake_min;return t?Math.round(100*a/t):0;}
+function quality(e){const ef=eff(e);
+  if(e.rem_pct>=18&&e.deep_pct>=13&&ef>=85)return['😴 잘 자는 중','#3fb950'];
+  if(e.rem_pct>=13&&e.deep_pct>=10&&ef>=78)return['🙂 양호','#58a6ff'];
+  return['😐 뒤척임 많음','#d29922'];}
+function tile(k,v,t,frac,col){
+  return '<div class="stat"><div class="k">'+k+'</div><div class="v">'+v+'</div>'+
+   (t?'<div class="t">'+t+'</div>':'')+
+   (frac!=null?'<div class="mini"><i style="width:'+Math.min(100,frac*100)+'%;background:'+col+'"></i></div>':'')+
+   '</div>';}
 async function tick(){
   try{
-    const r = await fetch('/status.json?_='+Date.now());
-    if(!r.ok) throw 0;
-    const d = await r.json();
-    const T = d.target_hours||8;
-    document.getElementById('mode').textContent = d.mode==='healthy'?'건강모드':('총'+T+'h');
-    const h = (d.hours==null?null:d.hours);
-    document.getElementById('hours').textContent = h==null?'–':h.toFixed(1)+'h';
-    document.getElementById('target').textContent = h==null?'':(' / '+T+'h 목표');
-    document.getElementById('bar').style.width = (h==null?0:Math.min(100,100*h/T))+'%';
-    const e = d.estimate, st = document.getElementById('stages');
-    if(e){ st.innerHTML =
-      '<div class="stat"><div class="k">REM</div><div class="v">'+e.rem_min+'분</div></div>'+
-      '<div class="stat"><div class="k">깊은수면</div><div class="v">'+e.deep_min+'분</div></div>'+
-      '<div class="stat"><div class="k">깬 시간</div><div class="v">'+e.awake_min+'분</div></div>';
-    } else st.innerHTML='';
-    document.getElementById('status').textContent = d.status||'…';
-    document.getElementById('cap').textContent = '상한 '+(d.cap_time||'')+(d.next_poll?' · 다음 '+d.next_poll:'');
-    document.getElementById('upd').textContent = '갱신 '+(d.updated||'').slice(11,19);
-  }catch(_){
-    document.getElementById('status').innerHTML='<span class="off">⚠️ 세션 미실행 또는 status.json 없음</span>';
-  }
+    const r=await fetch('/status.json?_='+Date.now()); if(!r.ok)throw 0;
+    const d=await r.json(); const T=d.target_hours||8; const h=(d.hours==null?null:d.hours);
+    mode.textContent=d.mode==='healthy'?'건강 수면 모드':('총 '+T+'h 모드');
+    hours.textContent=h==null?'–':h.toFixed(1); target.textContent=h==null?'':(' / '+T+'h');
+    bar.style.width=(h==null?0:Math.min(100,100*h/T))+'%';
+    remain.textContent=h==null?'오늘 수면 데이터 대기 중':('목표까지 '+Math.max(0,(T-h)).toFixed(1)+'h 남음');
+    const e=d.estimate;
+    if(e){const[ql,qc]=quality(e); qual.innerHTML='<span style="color:'+qc+'">'+ql+'</span> · 효율 '+eff(e)+'%';
+      const remT=d.rem_min_target, deepT=d.deep_min_target;
+      stages.innerHTML=
+        tile('REM 수면',e.rem_min+'분',d.mode==='healthy'?('목표 '+remT+'분'):(e.rem_pct+'%'),
+             d.mode==='healthy'?e.rem_min/remT:null,'#bc8cff')+
+        tile('깊은 수면',e.deep_min+'분',d.mode==='healthy'?('목표 '+deepT+'분'):(e.deep_pct+'%'),
+             d.mode==='healthy'?e.deep_min/deepT:null,'#58a6ff')+
+        tile('얕은 수면',e.light_min+'분',e.light_pct+'%',null,null)+
+        tile('깬 시간',e.awake_min+'분',null,null,null);
+    } else { qual.textContent=''; stages.innerHTML=''; }
+    const stale=(d.status||'').indexOf('지난')>=0;
+    status.innerHTML=(stale?'⏸️ ':'')+(d.status||'…')+
+      (d.phase==='syncing'?' <span class="ok">(동기화 중…)</span>':'');
+    meta.textContent='상한 '+(d.cap_time||'')+(d.next_poll?' · 다음 '+d.next_poll:'');
+    upd.textContent='갱신 '+(d.updated||'').slice(11,19);
+  }catch(_){ status.innerHTML='<span class="off">⚠️ 세션 미실행 (tonight.sh 확인)</span>'; }
 }
-tick(); setInterval(tick, 5000);
+async function doSync(){
+  const b=document.getElementById('sync');
+  b.disabled=true; b.textContent='요청됨 — 곧 동기화…';
+  try{ await fetch('/sync',{method:'POST'}); }catch(_){}
+  setTimeout(()=>{b.disabled=false;b.textContent='🔄 지금 동기화';},8000);
+  tick();
+}
+tick(); setInterval(tick,5000);
 </script></body></html>"""
 
 
@@ -121,6 +152,17 @@ class H(BaseHTTPRequestHandler):
                 self._send("{}", "application/json; charset=utf-8")
         else:
             self._send(PAGE, "text/html; charset=utf-8")
+
+    def do_POST(self):
+        if self.path.startswith("/sync"):
+            try:
+                LOGD.mkdir(parents=True, exist_ok=True)
+                SYNC_REQ.write_text(str(int(__import__("time").time())))
+                self._send('{"ok":true}', "application/json; charset=utf-8")
+            except Exception:
+                self._send('{"ok":false}', "application/json; charset=utf-8")
+        else:
+            self._send('{"ok":false}', "application/json; charset=utf-8")
 
     def log_message(self, *a):
         pass  # 조용히
