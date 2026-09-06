@@ -76,3 +76,19 @@ IMESSAGE_REPEAT=1 bash scripts/alarm.sh "테스트"   # 알람만
 
 ## 다음(M5): launchd 상주화
 매일 지정 시각 자동 시작은 launchd 등록으로. (미구현)
+
+## 개인화 수면단계 모델 (#2, 선택 — 정확도 향상)
+Oura의 공식 히프노그램(내 데이터)을 정답으로 내 원시신호에 맞춰 분류기를 학습한다.
+독점 모델/키는 안 건드리며, 학습 목표가 Oura 출력이라 잘 되면 근접해진다.
+
+```bash
+pip install scikit-learn
+# 1) 정답 라벨 수집 (assa.sqlite = iPhone 백업에서 추출한 내 건강데이터)
+python3 scripts/collect_labels.py <assa.sqlite 경로>      # data/training/labels_*.json
+# 2) 며칠~2주 모은 뒤 학습
+python3 scripts/train_model.py                            # models/sleep_clf.pkl
+# 3) 이후 sleep_estimate 가 모델을 자동 사용 (없으면 휴리스틱)
+```
+- 라벨/모델은 내 데이터 → `data/`·`models/` gitignore.
+- 라벨 소스: assa.sqlite(백업, 무겁다) 또는 공식 Oura API로 내 히프노그램만 받기(경량, OAuth 앱 필요).
+- 밤이 쌓일수록 정확해진다. 현재 휴리스틱(B)은 총·얕은수면·깬시간은 근접하나 REM↔깊은수면 구분이 약함 → 이 모델이 보완.

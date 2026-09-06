@@ -123,7 +123,47 @@ def _smooth(stages, min_run=2):
     return out
 
 
+MODEL_PKL = Path(__file__).resolve().parent.parent / "models" / "sleep_clf.pkl"
+FEATURES = ["hr", "rmssd", "motion", "frac", "hr_z", "rm_z"]
+
+
+def epoch_features(epochs):
+    """에폭 → 피처 dict 리스트 (학습/추론 공용)."""
+    hrs = [e["hr"] for e in epochs if e["hr"] > 0]
+    rms = [e["rmssd"] for e in epochs if e["rmssd"] > 0]
+    hr_m = st.mean(hrs) if hrs else 0
+    hr_sd = (st.pstdev(hrs) or 1) if len(hrs) > 1 else 1
+    rm_m = st.mean(rms) if rms else 0
+    rm_sd = (st.pstdev(rms) or 1) if len(rms) > 1 else 1
+    n = len(epochs)
+    return [{
+        "hr": e["hr"], "rmssd": e["rmssd"], "motion": e.get("motion", 0),
+        "frac": i / max(1, n - 1),
+        "hr_z": (e["hr"] - hr_m) / hr_sd, "rm_z": (e["rmssd"] - rm_m) / rm_sd,
+    } for i, e in enumerate(epochs)]
+
+
+def classify_model(epochs):
+    """학습된 개인화 모델(models/sleep_clf.pkl)이 있으면 그것으로 예측. 없으면 None."""
+    if not MODEL_PKL.exists():
+        return None
+    try:
+        import pickle
+        with open(MODEL_PKL, "rb") as f:
+            bundle = pickle.load(f)
+        clf, feats = bundle["clf"], bundle["features"]
+        rows = epoch_features(epochs)
+        X = [[r[k] for k in feats] for r in rows]
+        return _smooth(list(clf.predict(X)))
+    except Exception:
+        return None
+
+
 def classify(epochs):
+    # 개인화 모델 우선, 없으면 휴리스틱
+    m = classify_model(epochs)
+    if m is not None:
+        return m
     valid_hr = [e["hr"] for e in epochs if e["hr"] > 0]
     valid_rm = [e["rmssd"] for e in epochs if e["rmssd"] > 0]
     if len(valid_hr) < 5:

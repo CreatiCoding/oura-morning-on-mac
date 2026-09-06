@@ -1,2 +1,3 @@
 # WakeReady 런타임 파이썬 의존성 (선택). 없어도 핵심 동작함.
 qrcode        # TUI/웹 시작 시 접속 QR 표시 (없으면 QR만 생략)
+scikit-learn   # (#2 개인화 모델 학습용)

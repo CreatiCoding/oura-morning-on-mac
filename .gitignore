@@ -14,3 +14,4 @@ data/
 *.sqlite
 .venv/
 node_modules/
+models/
