@@ -22,13 +22,44 @@ DB = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).resolve().parent.p
 EPOCH_MIN = 5  # hrv_event 샘플 간격(분)
 
 
-def load_epochs(db):
-    """hrv_event 를 시간순 (hr, rmssd) 에폭 시퀀스로. 0값은 결측 처리."""
+def bedtime_window(db):
+    """가장 최근 bedtime_period 의 (start_ds, end_ds). 없으면 None."""
+    try:
+        con = sqlite3.connect(db)
+        row = con.execute(
+            "SELECT decoded_json FROM events WHERE name='bedtime_period' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        con.close()
+        if not row or not row[0]:
+            return None
+        v = json.loads(row[0])
+        return int(v["bedtime_start_ds"]), int(v["bedtime_end_ds"])
+    except Exception:
+        return None
+
+
+def load_epochs(db, start_ds=None, end_ds=None):
+    """hrv_event 를 시간순 (hr, rmssd) 에폭으로. 0값은 결측.
+
+    ⚠️ 반드시 '오늘 밤 수면창(bedtime_period)' 안으로 스코프한다. 안 그러면 DB에 누적된
+    지난 날/주간 이벤트까지 세어 REM·깊은수면이 몇 배로 부풀려진다. (window 미지정 시 자동 감지)
+    """
+    if start_ds is None or end_ds is None:
+        win = bedtime_window(db)
+        if win:
+            start_ds, end_ds = win
     con = sqlite3.connect(db)
-    rows = con.execute(
-        "SELECT ring_timestamp, decoded_json FROM events WHERE name='hrv_event' "
-        "ORDER BY ring_timestamp"
-    ).fetchall()
+    if start_ds is not None and end_ds is not None:
+        rows = con.execute(
+            "SELECT ring_timestamp, decoded_json FROM events "
+            "WHERE name='hrv_event' AND ring_timestamp BETWEEN ? AND ? "
+            "ORDER BY ring_timestamp", (start_ds, end_ds)
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT ring_timestamp, decoded_json FROM events WHERE name='hrv_event' "
+            "ORDER BY ring_timestamp").fetchall()
     con.close()
     epochs = []
     for ts, js in rows:
