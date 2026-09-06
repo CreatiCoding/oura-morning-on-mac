@@ -396,6 +396,10 @@ def do_poll(deadline):
     if hours is None:
         return None, None, None
     est = estimate_stages() if HEALTHY_MODE else None
+    # 헤드라인/판정의 '총 수면'은 창(bedtime_period)이 아니라 실제 잔 시간(깬시간 제외).
+    # 오피셜 '총 수면'과 같은 정의. est 있으면 그 값 사용.
+    if est and est.get("total_sleep_hours"):
+        hours = est["total_sleep_hours"]
 
     # 터미널 실시간 요약(누적 수면 + 품질) — TUI 모드에선 카드가 대신함
     remain = max(0.0, TARGET_SLEEP_HOURS - hours)

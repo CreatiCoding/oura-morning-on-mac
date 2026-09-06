@@ -168,40 +168,45 @@ def classify(epochs):
     valid_rm = [e["rmssd"] for e in epochs if e["rmssd"] > 0]
     if len(valid_hr) < 5:
         return None
-    hr_sorted = sorted(valid_hr)
-    hr_lo = hr_sorted[int(len(hr_sorted) * 0.15)]   # 깊은수면 기준(저 HR)
-    hr_hi = hr_sorted[int(len(hr_sorted) * 0.85)]
-    hr_rng = max(1, hr_hi - hr_lo)
-    rm_med = st.median(valid_rm) if valid_rm else 0
-    # 모션 각성 임계: 그 밤 모션 분포의 상위값 (모션 신호 있을 때만)
+
+    def pct(sorted_vals, p):
+        return sorted_vals[min(len(sorted_vals) - 1, int(len(sorted_vals) * p))]
+    hs, rs = sorted(valid_hr), sorted(valid_rm)
+    hr_t33, hr_t66 = pct(hs, 0.33), pct(hs, 0.66)   # HR 하위/상위 터셀
+    rm_t50, rm_t66 = pct(rs, 0.50), pct(rs, 0.66)   # HRV 중앙/상위
     motions = [e.get("motion", 0) for e in epochs if e.get("motion", 0) > 0]
     mo_hi = sorted(motions)[int(len(motions) * 0.80)] if len(motions) >= 5 else None
-
     n = len(epochs)
+
+    # 단기 HR 변동성(±2 에폭 표준편차): REM은 HR/호흡이 불규칙 → 변동성 높음
+    hr_series = [e["hr"] for e in epochs]
+    def local_var(i):
+        w = [hr_series[j] for j in range(max(0, i - 2), min(n, i + 3))
+             if hr_series[j] > 0]
+        return st.pstdev(w) if len(w) >= 2 else 0
+    lv = [local_var(i) for i in range(n)]
+    lv_hi = pct(sorted([x for x in lv if x > 0]) or [0], 0.60)
+
     stages = []
     for idx, e in enumerate(epochs):
         hr, rm, mo = e["hr"], e["rmssd"], e.get("motion", 0)
         frac = idx / max(1, n - 1)  # 0=초저녁 ~ 1=새벽
+        still = (mo_hi is None) or (mo < mo_hi)
         if hr <= 0:
             stages.append("WAKE"); continue
-        # 각성: 모션이 있으면 '큰 움직임'을 우선 신호로(HR보다 정확), 없으면 HR 상위
+        # 각성: 큰 움직임(우선) 또는 HR 매우 높음
         if mo_hi is not None:
-            if mo >= mo_hi and hr >= hr_lo + 0.5 * hr_rng:
+            if mo >= mo_hi and hr >= hr_t66:
                 stages.append("WAKE"); continue
-        elif hr >= hr_lo + 0.8 * hr_rng:
+        elif hr >= pct(hs, 0.90):
             stages.append("WAKE"); continue
-        # 깊은수면: 저 HR + 높은 RMSSD + 무움직임(있으면) + 초저녁 가중
-        deep_hr = hr <= hr_lo + 0.30 * hr_rng
-        deep_hrv = rm >= rm_med
-        deep_still = (mo_hi is None) or (mo < mo_hi * 0.5)
-        if deep_hr and deep_hrv and deep_still and frac < 0.75:
+        # 깊은수면(SWS): 최저 HR + 높은 HRV + 무움직임 + 전반부 가중.
+        deep_still = (mo_hi is None) or (mo < mo_hi * 0.6)
+        if hr <= hr_t33 and rm >= rm_t50 and deep_still and frac < 0.6:
             stages.append("DEEP"); continue
-        # REM: 중간~상승 HR + 낮은 RMSSD + 근무력(움직임 적음) + 새벽 가중
-        rem_hr = hr >= hr_lo + 0.35 * hr_rng
-        rem_hrv = rm < rm_med
-        rem_still = (mo_hi is None) or (mo < mo_hi)
-        rem_time = frac > 0.35  # 첫 사이클엔 REM 거의 없음
-        if rem_hr and rem_still and (rem_hrv or frac > 0.6) and rem_time:
+        # REM: 근무력(저움직임) + HR 단기변동 큼 or 후반부 + HR가 최저는 아님
+        rem_var = lv[idx] >= lv_hi
+        if still and hr > hr_t33 and (rem_var or frac > 0.5) and frac > 0.30:
             stages.append("REM"); continue
         stages.append("LIGHT")
     return _smooth(stages)
