@@ -19,6 +19,7 @@ Oura 링(Gen5)을 밤중에 직접 읽어, **"충분히/건강하게 잤을 때"
 ```bash
 ./scripts/setup.sh          # open_oura 빌드 + ./bin/oura 링크
 cp .env.example .env        # 설정 채우기 (자세한 항목은 .env.example 주석 참고)
+pip install -r requirements.txt   # (선택) 접속 QR 표시용 qrcode
 ```
 
 그다음 최초 1회:

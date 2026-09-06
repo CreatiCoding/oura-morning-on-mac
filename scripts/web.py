@@ -9,8 +9,36 @@ wakeready.py 가 남기는 logs/status.json 을 읽어 브라우저에서 실시
 """
 import json
 import os
+import socket
+import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+
+def _local_hostname():
+    try:
+        n = subprocess.run(["scutil", "--get", "LocalHostName"],
+                           capture_output=True, text=True, timeout=3).stdout.strip()
+        return n or None
+    except Exception:
+        return None
+
+
+def _lan_ip():
+    for iface in ("en0", "en1"):
+        try:
+            ip = subprocess.run(["ipconfig", "getifaddr", iface],
+                                capture_output=True, text=True, timeout=3).stdout.strip()
+            if ip:
+                return ip
+        except Exception:
+            pass
+    try:  # 폴백: 소켓으로 추정
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
+        return ip
+    except Exception:
+        return None
 
 ROOT = Path(__file__).resolve().parent.parent
 STATUS = Path(os.environ.get("LOG_DIR", str(ROOT / "logs"))) / "status.json"
@@ -100,6 +128,32 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), H)
-    print(f"WakeReady 웹뷰: http://localhost:{PORT}  (같은 와이파이면 http://<맥IP>:{PORT})")
-    print(f"상태 파일: {STATUS}")
+    host = _local_hostname()
+    ip = _lan_ip()
+    bar = "─" * 46
+    print(bar)
+    print("  WakeReady 웹뷰 실행 중 — 같은 와이파이에서 접속:")
+    if host:
+        print(f"    ▶  http://{host}.local:{PORT}      (권장·주소 고정)")
+    if ip:
+        print(f"    ▶  http://{ip}:{PORT}")
+    print(f"    ▶  http://localhost:{PORT}          (이 맥에서)")
+    print(bar)
+    # 폰 카메라로 스캔하면 바로 열리는 QR
+    url = f"http://{host}.local:{PORT}" if host else (f"http://{ip}:{PORT}" if ip else None)
+    if url:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from _qr import qr_ascii
+            q = qr_ascii(url)
+            if q:
+                print("  📷 폰 카메라로 스캔:")
+                print(q)
+            else:
+                print("  (QR 보려면: pip install qrcode)")
+        except Exception:
+            pass
+    print(f"  상태 파일: {STATUS}")
+    print("  (Ctrl+C 로 종료)")
     srv.serve_forever()

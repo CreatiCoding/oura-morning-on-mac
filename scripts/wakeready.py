@@ -382,6 +382,34 @@ def do_poll(deadline):
     return hours, est, bp
 
 
+def web_banner():
+    """웹뷰 접속 주소 + QR을 세션 시작 시 1회 출력 (폰으로 스캔해서 열기)."""
+    port = os.environ.get("WEB_PORT", "8777")
+    host = None
+    try:
+        host = subprocess.run(["scutil", "--get", "LocalHostName"],
+                              capture_output=True, text=True, timeout=3).stdout.strip() or None
+    except Exception:
+        pass
+    url = f"http://{host}.local:{port}" if host else None
+    if not url:
+        return
+    print("─" * 46)
+    print(f"  🌐 웹뷰(같은 와이파이): {url}")
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from _qr import qr_ascii
+        q = qr_ascii(url)
+        if q:
+            print("  📷 폰 카메라로 스캔 →")
+            print(q)
+    except Exception:
+        pass
+    print("─" * 46)
+    if TUI:
+        time.sleep(4)  # 카드로 넘어가기 전 QR 읽을 시간
+
+
 def main():
     cap = cap_datetime()
     mode = "건강모드" if HEALTHY_MODE else f"총{TARGET_SLEEP_HOURS}h"
@@ -391,6 +419,8 @@ def main():
         cap_time=cap.isoformat(timespec="minutes"),
         rem_min=REM_MIN_MIN if HEALTHY_MODE else None,
         deep_min=DEEP_MIN_MIN if HEALTHY_MODE else None, db=DB)
+    if not (TEST_ONCE or TEST_ALARM):
+        web_banner()
 
     # --- 테스트 모드들 ---
     if TEST_ALARM:
