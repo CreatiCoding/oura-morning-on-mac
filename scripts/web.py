@@ -52,8 +52,10 @@ PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
+html,body{height:100%}
 body{margin:0;font:16px -apple-system,system-ui,sans-serif;background:#0e1116;color:#e6edf3;
- display:flex;min-height:100vh;align-items:flex-start;justify-content:center;padding:20px}
+ display:flex;height:100dvh;align-items:center;justify-content:center;padding:16px;
+ overflow:hidden;overscroll-behavior:none}
 .card{width:100%;max-width:460px;background:#161b22;border:1px solid #30363d;border-radius:18px;
  padding:22px 22px 18px;box-shadow:0 8px 30px rgba(0,0,0,.4)}
 .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
