@@ -289,6 +289,32 @@ def quality_label(est):
     return f"{tag} (효율 {eff:.0f}%)"
 
 
+def publish_status(*, phase, hours=None, est=None, status="", cap=None, next_poll=None):
+    """웹뷰용 현재 상태를 logs/status.json 에 기록 (웹서버가 읽음). 항상 호출."""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "updated": datetime.now().isoformat(timespec="seconds"),
+            "mode": "healthy" if HEALTHY_MODE else "total",
+            "phase": phase, "status": status,
+            "hours": hours, "target_hours": TARGET_SLEEP_HOURS,
+            "rem_min_target": REM_MIN_MIN, "deep_min_target": DEEP_MIN_MIN,
+            "estimate": est,
+            "cap_time": cap.strftime("%H:%M") if cap else CAP_TIME,
+            "next_poll": next_poll.strftime("%H:%M:%S") if next_poll else None,
+        }
+        (LOG_DIR / "status.json").write_text(json.dumps(rec, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def show(**kw):
+    """웹용 status.json 기록(항상) + TUI 카드(TUI일 때)."""
+    publish_status(**kw)
+    if TUI:
+        render_tui(**kw)
+
+
 def render_tui(*, phase, hours=None, est=None, status="", cap=None, next_poll=None):
     """ANSI 기반 라이브 카드(의존성 0). 화면을 지우고 제자리에 다시 그린다."""
     W = 46
@@ -408,11 +434,10 @@ def main():
 
         # 이번 폴링 창: 성공할 때까지 이 시간까지 계속 재시도 (상한은 넘지 않게)
         window_deadline = min(now + timedelta(minutes=POLL_INTERVAL_MIN), cap)
-        if TUI:
-            # 동기화 중에도 마지막 성공 기록은 유지해서 보여줌
-            render_tui(phase="syncing" if last_hours is None else "result",
-                       hours=last_hours, est=last_est,
-                       status="🔗 동기화 시도 중 (성공까지 반복)...", cap=cap)
+        # 동기화 중에도 마지막 성공 기록은 유지해서 보여줌
+        show(phase="syncing" if last_hours is None else "result",
+             hours=last_hours, est=last_est,
+             status="🔗 동기화 시도 중 (성공까지 반복)...", cap=cap)
         hours, est, bp = do_poll(window_deadline)
         status = ""
         if hours is None:
@@ -433,8 +458,7 @@ def main():
                 fire, reason = check_wake(hours, est)
                 status = "🔔 기상!" if fire else "⏳ 목표까지 대기 중"
                 if fire:
-                    if TUI:
-                        render_tui(phase="result", hours=hours, est=est, status=status, cap=cap)
+                    show(phase="result", hours=hours, est=est, status=status, cap=cap)
                     fire_alarm(reason)
                     if not DRY_RUN:
                         break
@@ -444,13 +468,12 @@ def main():
         remaining = (min(window_deadline, cap) - datetime.now()).total_seconds()
         wait = max(1, remaining)
         nxt = datetime.now() + timedelta(seconds=wait)
-        if TUI:
-            # 실패/지난수면이어도 마지막 성공 기록(last_*)을 카드에 계속 표시
-            disp_h = hours if (hours is not None and not is_stale(bp)) else last_hours
-            disp_e = est if (hours is not None and not is_stale(bp)) else last_est
-            render_tui(phase="result", hours=disp_h, est=disp_e, status=status,
-                       cap=cap, next_poll=nxt)
-        else:
+        # 실패/지난수면이어도 마지막 성공 기록(last_*)을 카드/웹에 계속 표시
+        disp_h = hours if (hours is not None and not is_stale(bp)) else last_hours
+        disp_e = est if (hours is not None and not is_stale(bp)) else last_est
+        show(phase="result", hours=disp_h, est=disp_e, status=status,
+             cap=cap, next_poll=nxt)
+        if not TUI:
             log(f"다음 폴링 {nxt.strftime('%H:%M:%S')} (약 {int(wait//60)}분 후)")
         time.sleep(wait)
 

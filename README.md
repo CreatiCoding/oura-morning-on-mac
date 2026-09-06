@@ -35,6 +35,17 @@ caffeinate -s ./scripts/tonight.sh --tui    # 예쁜 TUI 카드로 실시간 표
 
 취침 전 체크: 링 착용 💍 · 아이폰 블루투스 OFF(맥이 링 점유) · 무음 OFF · **폴링 맥은 침대 BLE 범위(~5m) 내**.
 
+### 웹으로 상태 보기 (같은 와이파이)
+헤드리스 맥미니 상태를 폰/다른 기기 브라우저에서 확인:
+```bash
+python3 scripts/web.py            # 기본 포트 8777
+```
+`tonight.sh`(폴링)와 **별도로** 띄운다. 접속 주소(같은 와이파이):
+- **`http://<맥이름>.local:8777`** ← 권장(IP 바뀌어도 유지). 맥이름: `scutil --get LocalHostName`
+- 또는 `http://<맥IP>:8777` (`ipconfig getifaddr en0`)
+
+자동 새로고침되는 카드로 수면시간·REM/깊은수면·상태가 보인다. (읽기 전용, `logs/status.json` 표시)
+
 테스트:
 ```bash
 python scripts/wakeready.py --test-alarm            # 알람만 즉시 발동
