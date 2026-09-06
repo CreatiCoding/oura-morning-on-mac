@@ -49,7 +49,9 @@ def main():
     # 현재 DB의 창으로 피처 추출(밤마다 별도 DB가 이상적이나, 우선 최신 창 사용)
     for lf in label_files:
         lab = json.loads(Path(lf).read_text())
-        stages30 = lab["stages_30s"]
+        stages30 = lab.get("stages_30s") or lab.get("stages")   # assa(30s) 또는 API(5min)
+        if not stages30:
+            continue
         epochs = se.load_epochs(db)   # 최신 창 에폭 (밤별 DB 스냅샷이면 더 정확)
         feats = se.epoch_features(epochs)
         if len(feats) < 5:

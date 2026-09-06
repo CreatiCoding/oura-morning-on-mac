@@ -83,8 +83,9 @@ Oura의 공식 히프노그램(내 데이터)을 정답으로 내 원시신호�
 
 ```bash
 pip install scikit-learn
-# 1) 정답 라벨 수집 (assa.sqlite = iPhone 백업에서 추출한 내 건강데이터)
-python3 scripts/collect_labels.py <assa.sqlite 경로>      # data/training/labels_*.json
+# 1) 정답 라벨 수집 — 둘 중 하나
+python3 scripts/collect_labels.py <assa.sqlite>          # (백업에서) 무겁지만 오프라인
+OURA_API_TOKEN=xxx python3 scripts/fetch_labels_api.py    # (공식 API·권장) 경량, 하루 1콜
 # 2) 며칠~2주 모은 뒤 학습
 python3 scripts/train_model.py                            # models/sleep_clf.pkl
 # 3) 이후 sleep_estimate 가 모델을 자동 사용 (없으면 휴리스틱)
