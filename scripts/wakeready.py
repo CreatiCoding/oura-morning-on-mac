@@ -17,8 +17,18 @@ import os
 import subprocess
 import sys
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
+
+_LOG_TAIL = deque(maxlen=6)   # TUI 카드에 보여줄 최근 로그
+
+
+def emit(msg):
+    """진행 로그: 최근로그 버퍼에 쌓고, 비TUI면 터미널에도 출력."""
+    _LOG_TAIL.append(f"{datetime.now():%H:%M:%S} {msg}")
+    if not TUI:
+        print("           " + msg, flush=True)
 
 # ---- .env 자동 로드 (직접 실행해도 설정이 적용되도록) ----
 ROOT = Path(__file__).resolve().parent.parent
@@ -96,6 +106,7 @@ def log(msg, **fields):
     rec = {"ts": ts, "msg": msg, **fields}
     with open(LOG_DIR / "wakeready.jsonl", "a") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    _LOG_TAIL.append(f"{ts[11:19]} {msg}")   # TUI 카드용 최근로그
     if TUI:   # TUI 모드에선 카드만 그리고, 로그는 파일에만
         return
     # 터미널엔 주요 필드도 함께 보이도록 요약
@@ -156,8 +167,7 @@ def poll_window(deadline):
 
     한 번 시도 성공률이 낮아도(BLE 광고 간헐성), 창 안에서 반복하면 누적 성공률이
     1에 수렴한다. 성공하면 즉시 반환하고 남은 시간은 호출측에서 쉰다(배터리 절약)."""
-    if not TUI:
-        print("           🔗 링 연결·동기화 시도 중... (성공할 때까지 반복)", flush=True)
+    emit("🔗 링 연결·동기화 시도 중...")
     t0 = time.time()
     n = 0
     while datetime.now() < deadline:
@@ -165,15 +175,12 @@ def poll_window(deadline):
         # 첫 시도와 이후 4회마다 sleep-analyze(수면 재분석 갱신), 나머지는 sync만(빠름)
         ok, err = single_attempt(do_analyze=(n == 1 or n % 4 == 0))
         if ok:
-            if not TUI:
-                print(f"           ⟳ 동기화 완료 ({time.time()-t0:.0f}초, {n}회째)", flush=True)
+            emit(f"⟳ 동기화 완료 ({time.time()-t0:.0f}초, {n}회째)")
             return latest_sleep_hours()
         rem = (deadline - datetime.now()).total_seconds()
         if rem <= 0:
             break
-        if not TUI:
-            print(f"           ↻ {n}회 실패({err[:40]}...) — {ATTEMPT_GAP_SEC:.0f}초 후 재시도",
-                  flush=True)
+        emit(f"↻ {n}회 실패 — {ATTEMPT_GAP_SEC:.0f}초 후 재시도")
         time.sleep(min(ATTEMPT_GAP_SEC, rem))
     log("폴링 창 내 모든 시도 실패", attempts=n)
     return None
@@ -360,6 +367,12 @@ def render_tui(*, phase, hours=None, est=None, status="", cap=None, next_poll=No
     foot.append(f"now {datetime.now().strftime('%H:%M:%S')}")
     lines.append(" ⏰ " + "  ·  ".join(foot))
     lines.append(rule())
+    # 최근 로그 (QR 위에 상시 표시 → 별도 터미널 없이 진행상황 확인)
+    if _LOG_TAIL:
+        lines.append(" 📜 최근 로그")
+        for ln in list(_LOG_TAIL):
+            lines.append("   " + ln)
+        lines.append(rule())
     # 웹뷰 QR을 카드 안에 포함 → 매 갱신마다 함께 그려져 계속 보임
     url, qr = web_url_and_qr()
     if url:
