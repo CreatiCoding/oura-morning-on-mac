@@ -501,6 +501,15 @@ def main():
     fails = 0
     last_hours = None   # 마지막 성공 폴링 기록 (연결 실패 시에도 카드에 계속 표시)
     last_est = None
+    # 재시작해도 직전 세션의 마지막 데이터를 이어서 표시 (status.json 복원)
+    try:
+        prev = json.loads((LOG_DIR / "status.json").read_text())
+        if prev.get("hours") is not None:
+            last_hours, last_est = prev.get("hours"), prev.get("estimate")
+            log("이전 상태 복원 — 새 데이터 전까지 마지막 기록 표시",
+                restored_hours=last_hours)
+    except Exception:
+        pass
     try:                # 세션 시작 시 오래된 수동요청 플래그 제거
         SYNC_REQ.unlink()
     except Exception:
