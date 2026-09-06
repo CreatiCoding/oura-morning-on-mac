@@ -103,9 +103,12 @@ async function tick(){
     const r=await fetch('/status.json?_='+Date.now()); if(!r.ok)throw 0;
     const d=await r.json(); const T=d.target_hours||8; const h=(d.hours==null?null:d.hours);
     mode.textContent=d.mode==='healthy'?'건강 수면 모드':('총 '+T+'h 모드');
-    hours.textContent=h==null?'–':h.toFixed(1); target.textContent=h==null?'':(' / '+T+'h');
-    bar.style.width=(h==null?0:Math.min(100,100*h/T))+'%';
-    remain.textContent=h==null?'오늘 수면 데이터 대기 중':('목표까지 '+Math.max(0,(T-h)).toFixed(1)+'h 남음');
+    // 데이터가 있을 때만 숫자 교체. 동기화 중(null)이면 이전 화면 유지(깜빡임 방지).
+    if(h!=null){
+      hours.textContent=h.toFixed(1); target.textContent=' / '+T+'h';
+      bar.style.width=Math.min(100,100*h/T)+'%';
+      remain.textContent='목표까지 '+Math.max(0,(T-h)).toFixed(1)+'h 남음';
+    }
     const e=d.estimate;
     if(e){const[ql,qc]=quality(e); qual.innerHTML='<span style="color:'+qc+'">'+ql+'</span> · 효율 '+eff(e)+'%';
       const remT=d.rem_min_target, deepT=d.deep_min_target;
@@ -116,7 +119,7 @@ async function tick(){
              d.mode==='healthy'?e.deep_min/deepT:null,'#58a6ff')+
         tile('얕은 수면',e.light_min+'분',e.light_pct+'%',null,null)+
         tile('깬 시간',e.awake_min+'분',null,null,null);
-    } else { qual.textContent=''; stages.innerHTML=''; }
+    }  // estimate 없어도 이전 타일 유지(지우지 않음)
     const stale=(d.status||'').indexOf('지난')>=0;
     let s=(stale?'⏸️ ':'')+(d.status||'…');
     if(d.phase==='syncing'){ s+=' <span class="ok">(동기화 중…)</span>';
