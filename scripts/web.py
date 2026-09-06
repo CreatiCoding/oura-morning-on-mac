@@ -118,8 +118,10 @@ async function tick(){
         tile('깬 시간',e.awake_min+'분',null,null,null);
     } else { qual.textContent=''; stages.innerHTML=''; }
     const stale=(d.status||'').indexOf('지난')>=0;
-    status.innerHTML=(stale?'⏸️ ':'')+(d.status||'…')+
-      (d.phase==='syncing'?' <span class="ok">(동기화 중…)</span>':'');
+    let s=(stale?'⏸️ ':'')+(d.status||'…');
+    if(d.phase==='syncing'){ s+=' <span class="ok">(동기화 중…)</span>';
+      if((d.fails||0)>=2) s+='<br><span class="off">링 연결 실패 '+d.fails+'회 — 링 착용·맥 근처·아이폰 BT OFF 확인</span>'; }
+    status.innerHTML=s;
     meta.textContent='상한 '+(d.cap_time||'')+(d.next_poll?' · 다음 '+d.next_poll:'');
     upd.textContent='갱신 '+(d.updated||'').slice(11,19);
   }catch(_){ status.innerHTML='<span class="off">⚠️ 세션 미실행 (tonight.sh 확인)</span>'; }
@@ -141,6 +143,7 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store")   # 옛 페이지 캐시 방지
         self.end_headers()
         self.wfile.write(b)
 

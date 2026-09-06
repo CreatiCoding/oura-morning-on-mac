@@ -312,14 +312,15 @@ def quality_label(est):
     return f"{tag} (효율 {eff:.0f}%)"
 
 
-def publish_status(*, phase, hours=None, est=None, status="", cap=None, next_poll=None):
+def publish_status(*, phase, hours=None, est=None, status="", cap=None, next_poll=None,
+                   fails=0):
     """웹뷰용 현재 상태를 logs/status.json 에 기록 (웹서버가 읽음). 항상 호출."""
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         rec = {
             "updated": datetime.now().isoformat(timespec="seconds"),
             "mode": "healthy" if HEALTHY_MODE else "total",
-            "phase": phase, "status": status,
+            "phase": phase, "status": status, "fails": fails,
             "hours": hours, "target_hours": TARGET_SLEEP_HOURS,
             "rem_min_target": REM_MIN_MIN, "deep_min_target": DEEP_MIN_MIN,
             "estimate": est,
@@ -335,7 +336,7 @@ def show(**kw):
     """웹용 status.json 기록(항상) + TUI 카드(TUI일 때)."""
     publish_status(**kw)
     if TUI:
-        render_tui(**kw)
+        render_tui(**{k: v for k, v in kw.items() if k != "fails"})
 
 
 def render_tui(*, phase, hours=None, est=None, status="", cap=None, next_poll=None):
@@ -520,7 +521,7 @@ def main():
         # 동기화 중에도 마지막 성공 기록은 유지해서 보여줌
         show(phase="syncing" if last_hours is None else "result",
              hours=last_hours, est=last_est,
-             status="🔗 동기화 시도 중 (성공까지 반복)...", cap=cap)
+             status="🔗 동기화 시도 중 (성공까지 반복)...", cap=cap, fails=fails)
         hours, est, bp = do_poll(window_deadline)
         status = ""
         if hours is None:
@@ -556,7 +557,7 @@ def main():
         disp_h = hours if hours is not None else last_hours
         disp_e = est if hours is not None else last_est
         show(phase="result", hours=disp_h, est=disp_e, status=status,
-             cap=cap, next_poll=nxt)
+             cap=cap, next_poll=nxt, fails=fails)
         if not TUI:
             log(f"다음 폴링 {nxt.strftime('%H:%M:%S')} (약 {int(wait//60)}분 후) · 웹 '지금 동기화'로 앞당기기 가능")
         wait_or_sync(wait)   # 웹 수동 동기화 요청 오면 즉시 다음 폴링
