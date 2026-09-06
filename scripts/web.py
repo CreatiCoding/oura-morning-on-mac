@@ -81,10 +81,19 @@ body{margin:0;font:16px -apple-system,system-ui,sans-serif;background:#0e1116;co
 <div class="card">
   <div class="hd"><b>💤 WakeReady</b><span class="tag" id="mode">—</span></div>
   <div><span class="big"><span id="hours">–</span><small id="target"></small></span></div>
-  <div class="sub" id="remain"></div>
+  <div class="sub" id="remain">&nbsp;</div>
   <div class="bar"><i id="bar" style="width:0%"></i></div>
-  <div class="qual" id="qual"></div>
-  <div class="grid" id="stages"></div>
+  <div class="qual" id="qual">&nbsp;</div>
+  <div class="grid">
+    <div class="stat"><div class="k">REM 수면</div><div class="v" id="rem_v">–</div>
+      <div class="t" id="rem_t">&nbsp;</div><div class="mini"><i id="rem_bar" style="width:0%;background:#bc8cff"></i></div></div>
+    <div class="stat"><div class="k">깊은 수면</div><div class="v" id="deep_v">–</div>
+      <div class="t" id="deep_t">&nbsp;</div><div class="mini"><i id="deep_bar" style="width:0%;background:#58a6ff"></i></div></div>
+    <div class="stat"><div class="k">얕은 수면</div><div class="v" id="light_v">–</div>
+      <div class="t" id="light_t">&nbsp;</div><div class="mini"><i style="width:0%"></i></div></div>
+    <div class="stat"><div class="k">깬 시간</div><div class="v" id="awake_v">–</div>
+      <div class="t">&nbsp;</div><div class="mini"><i style="width:0%"></i></div></div>
+  </div>
   <div class="status" id="status">연결 대기 중…</div>
   <button class="btn" id="sync" onclick="doSync()">🔄 지금 동기화</button>
   <div class="foot"><span id="meta"></span><span id="upd"></span></div>
@@ -113,15 +122,15 @@ async function tick(){
     }
     const e=d.estimate;
     if(e){const[ql,qc]=quality(e); qual.innerHTML='<span style="color:'+qc+'">'+ql+'</span> · 효율 '+eff(e)+'%';
-      const remT=d.rem_min_target, deepT=d.deep_min_target;
-      stages.innerHTML=
-        tile('REM 수면',e.rem_min+'분',d.mode==='healthy'?('목표 '+remT+'분'):(e.rem_pct+'%'),
-             d.mode==='healthy'?e.rem_min/remT:null,'#bc8cff')+
-        tile('깊은 수면',e.deep_min+'분',d.mode==='healthy'?('목표 '+deepT+'분'):(e.deep_pct+'%'),
-             d.mode==='healthy'?e.deep_min/deepT:null,'#58a6ff')+
-        tile('얕은 수면',e.light_min+'분',e.light_pct+'%',null,null)+
-        tile('깬 시간',e.awake_min+'분',null,null,null);
-    }  // estimate 없어도 이전 타일 유지(지우지 않음)
+      const remT=d.rem_min_target, deepT=d.deep_min_target, healthy=d.mode==='healthy';
+      const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+      set('rem_v',e.rem_min+'분');  set('rem_t', healthy?('목표 '+remT+'분'):(e.rem_pct+'%'));
+      set('deep_v',e.deep_min+'분'); set('deep_t', healthy?('목표 '+deepT+'분'):(e.deep_pct+'%'));
+      set('light_v',e.light_min+'분'); set('light_t', e.light_pct+'%'); set('awake_v',e.awake_min+'분');
+      const bar=(id,f)=>{const el=document.getElementById(id);if(el)el.style.width=Math.min(100,f*100)+'%';};
+      bar('rem_bar', healthy?e.rem_min/remT:e.rem_pct/25);
+      bar('deep_bar', healthy?e.deep_min/deepT:e.deep_pct/20);
+    }  // estimate 없어도 이전 값 유지(지우지 않음)
     const stale=(d.status||'').indexOf('지난')>=0;
     let s=(stale?'⏸️ ':'')+(d.status||'…');
     if(d.phase==='syncing'){ s+=' <span class="ok">(동기화 중…)</span>';
