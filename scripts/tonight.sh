@@ -23,6 +23,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# 0) #2 학습용 라벨 자동 수집 (토큰 있으면, 최근 14일, best-effort 백그라운드)
+if [ -n "${OURA_API_TOKEN:-}" ]; then
+  ( "$PY" scripts/fetch_labels_api.py \
+      "$(python3 -c 'from datetime import date,timedelta;print(date.today()-timedelta(days=14))')" \
+      "$(date +%F)" >logs/labels.out 2>&1 ) &
+fi
+
 # 1) 웹서버 백그라운드 실행 (같은 와이파이에서 폰으로 상태 확인)
 if [ "$WEB" = "1" ]; then
   WEB_PORT="$WEB_PORT" "$PY" scripts/web.py >logs/web.out 2>&1 &
