@@ -380,6 +380,8 @@ def main():
     # 지난밤 데이터 가드: 수면 '종료'가 지금으로부터 STALE_AFTER_HOURS 이상 지났으면
     # 지난 수면으로 보고 알람 미발동. 오늘 자면 종료시점이 ~지금이 되어 판정 대상이 됨.
     fails = 0
+    last_hours = None   # 마지막 성공 폴링 기록 (연결 실패 시에도 카드에 계속 표시)
+    last_est = None
     while True:
         now = datetime.now()
         to_cap = cap - now
@@ -392,13 +394,16 @@ def main():
             break
 
         if TUI:
-            render_tui(phase="syncing", cap=cap)
+            # 동기화 중에도 마지막 성공 기록은 유지해서 보여줌
+            render_tui(phase="syncing" if last_hours is None else "result",
+                       hours=last_hours, est=last_est,
+                       status="🔗 동기화 중...", cap=cap)
         hours, est, bp = do_poll()
         status = ""
         if hours is None:
             fails += 1
             log("폴링 실패", consecutive_fails=fails)
-            status = f"⚠️ 링 연결 실패 ({fails}회)"
+            status = f"⚠️ 링 연결 실패 ({fails}회) · 마지막 기록 유지"
             if fails >= MAX_FAILS_BEFORE_FALLBACK and to_cap <= timedelta(minutes=30):
                 fire_alarm("연결 실패 누적 + 상한 임박 — 폴백 기상")
                 break
@@ -409,6 +414,7 @@ def main():
                 log(f"⏸️ 지난 수면 무시 중 (종료 {gap:.1f}시간 전) — 오늘 새 수면 대기")
                 status = f"⏸️ 지난 수면 (종료 {gap:.1f}h 전) — 오늘 수면 대기"
             else:
+                last_hours, last_est = hours, est   # 마지막 성공 기록 저장
                 fire, reason = check_wake(hours, est)
                 status = "🔔 기상!" if fire else "⏳ 목표까지 대기 중"
                 if fire:
@@ -424,7 +430,10 @@ def main():
         wait = max(5, min(sleep_s, remaining))
         nxt = datetime.now() + timedelta(seconds=wait)
         if TUI:
-            render_tui(phase="result", hours=hours, est=est, status=status,
+            # 실패/지난수면이어도 마지막 성공 기록(last_*)을 카드에 계속 표시
+            disp_h = hours if (hours is not None and not is_stale(bp)) else last_hours
+            disp_e = est if (hours is not None and not is_stale(bp)) else last_est
+            render_tui(phase="result", hours=disp_h, est=disp_e, status=status,
                        cap=cap, next_poll=nxt)
         else:
             log(f"다음 폴링 {nxt.strftime('%H:%M:%S')} (약 {int(wait//60)}분 후)")
