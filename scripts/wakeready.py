@@ -131,39 +131,52 @@ BLE_GAP_SEC = float(os.environ.get("BLE_GAP_SEC", "12"))   # BLE 명령 사이 �
 SYNC_RETRIES = int(os.environ.get("SYNC_RETRIES", "3"))
 
 
-def poll_once():
-    """sleep-analyze + sync 후 최신 bedtime_period duration_hours 반환. 실패 시 None.
+ATTEMPT_GAP_SEC = float(os.environ.get("ATTEMPT_GAP_SEC", "15"))  # 창 내 재시도 간격
 
-    주의: 링은 연속 재연결에 약하다. sleep-analyze 직후 곧바로 sync 하면 재광고 전이라
-    'no matching ring' 또는 인증거부가 난다. → 명령 사이 딜레이 + sync 재시도로 완화.
-    """
-    if not TUI:
-        print("           🔗 링 연결·수면분석·동기화 중... (30초~2분 소요)", flush=True)
-    t0 = time.time()
-    try:
-        run_oura("sleep-analyze", "--force")  # 링이 분석을 돌리도록 요청(best-effort)
-    except Exception as e:
-        log("sleep-analyze 실패(무시)", error=str(e))
-    # 링이 재광고할 시간을 준다 (핵심: 이게 없으면 sync가 링을 못 찾음)
-    time.sleep(BLE_GAP_SEC)
-    for attempt in range(1, SYNC_RETRIES + 1):
+
+def single_attempt(do_analyze=True):
+    """sleep-analyze(옵션) + sync 1회. 성공 시 True, 실패 시 (False, 에러문자열)."""
+    if do_analyze:
         try:
-            r = run_oura("sync")
-            if r.returncode == 0:
-                if not TUI:
-                    print(f"           ⟳ 동기화 완료 ({time.time()-t0:.0f}초)", flush=True)
-                break
-            err = (r.stderr or "")[-160:]
-        except Exception as e:
-            err = str(e)
-        if attempt < SYNC_RETRIES:
+            run_oura("sleep-analyze", "--force")
+        except Exception:
+            pass
+        time.sleep(BLE_GAP_SEC)  # 재광고 대기(핵심: 없으면 sync가 링을 못 찾음)
+    try:
+        r = run_oura("sync")
+        if r.returncode == 0:
+            return True, ""
+        return False, (r.stderr or "")[-160:]
+    except Exception as e:
+        return False, str(e)
+
+
+def poll_window(deadline):
+    """deadline 까지 sync 성공할 때까지 계속 시도. 성공하면 hours, 끝까지 실패면 None.
+
+    한 번 시도 성공률이 낮아도(BLE 광고 간헐성), 창 안에서 반복하면 누적 성공률이
+    1에 수렴한다. 성공하면 즉시 반환하고 남은 시간은 호출측에서 쉰다(배터리 절약)."""
+    if not TUI:
+        print("           🔗 링 연결·동기화 시도 중... (성공할 때까지 반복)", flush=True)
+    t0 = time.time()
+    n = 0
+    while datetime.now() < deadline:
+        n += 1
+        # 첫 시도와 이후 4회마다 sleep-analyze(수면 재분석 갱신), 나머지는 sync만(빠름)
+        ok, err = single_attempt(do_analyze=(n == 1 or n % 4 == 0))
+        if ok:
             if not TUI:
-                print(f"           ↻ sync 재시도 {attempt}/{SYNC_RETRIES-1} ({BLE_GAP_SEC:.0f}초 후)...", flush=True)
-            time.sleep(BLE_GAP_SEC)
-        else:
-            log("sync 실패 (링 연결 확인: 아이폰 BT off, 링 착용, 맥 근처)", stderr=err)
-            return None
-    return latest_sleep_hours()
+                print(f"           ⟳ 동기화 완료 ({time.time()-t0:.0f}초, {n}회째)", flush=True)
+            return latest_sleep_hours()
+        rem = (deadline - datetime.now()).total_seconds()
+        if rem <= 0:
+            break
+        if not TUI:
+            print(f"           ↻ {n}회 실패({err[:40]}...) — {ATTEMPT_GAP_SEC:.0f}초 후 재시도",
+                  flush=True)
+        time.sleep(min(ATTEMPT_GAP_SEC, rem))
+    log("폴링 창 내 모든 시도 실패", attempts=n)
+    return None
 
 
 def estimate_stages():
@@ -310,12 +323,12 @@ def render_tui(*, phase, hours=None, est=None, status="", cap=None, next_poll=No
     sys.stdout.flush()
 
 
-def do_poll():
-    """한 번 폴링 + 친근한 실시간 상태 출력. (hours, est, bp) 반환. bp=최신 bedtime_period dict."""
+def do_poll(deadline):
+    """deadline 까지 폴링(성공할 때까지 반복) + 상태 출력. (hours, est, bp) 반환."""
     if SIMULATE_HOURS is not None:
         hours, bp = SIMULATE_HOURS, None
     else:
-        hours = poll_once()
+        hours = poll_window(deadline)
         bp = latest_bedtime_period() if hours is not None else None
     if hours is None:
         return None, None, None
@@ -359,8 +372,8 @@ def main():
         fire_alarm("테스트 알람 (--test-alarm)")
         return
     if TEST_ONCE:
-        log("[--once] 1회 폴링 점검")
-        hours, est, bp = do_poll()
+        log("[--once] 폴링 점검 (최대 2분간 성공할 때까지 시도)")
+        hours, est, bp = do_poll(datetime.now() + timedelta(minutes=2))
         if hours is None:
             log("폴링 실패 — 링 연결/인증 확인 필요 (아이폰 BT off, 링 착용/충전)")
         else:
@@ -393,12 +406,14 @@ def main():
             fire_alarm(f"안전 상한 시각({CAP_TIME}) 도달 — 무조건 기상")
             break
 
+        # 이번 폴링 창: 성공할 때까지 이 시간까지 계속 재시도 (상한은 넘지 않게)
+        window_deadline = min(now + timedelta(minutes=POLL_INTERVAL_MIN), cap)
         if TUI:
             # 동기화 중에도 마지막 성공 기록은 유지해서 보여줌
             render_tui(phase="syncing" if last_hours is None else "result",
                        hours=last_hours, est=last_est,
-                       status="🔗 동기화 중...", cap=cap)
-        hours, est, bp = do_poll()
+                       status="🔗 동기화 시도 중 (성공까지 반복)...", cap=cap)
+        hours, est, bp = do_poll(window_deadline)
         status = ""
         if hours is None:
             fails += 1
@@ -424,10 +439,10 @@ def main():
                     if not DRY_RUN:
                         break
 
-        # 다음 폴링까지 대기 (단, 상한을 넘지 않게)
-        sleep_s = POLL_INTERVAL_MIN * 60
-        remaining = (cap - datetime.now()).total_seconds()
-        wait = max(5, min(sleep_s, remaining))
+        # 이번 창에서 남은 시간만 쉰다 (성공했으면 남은 ~폴링간격을 쉼 = 배터리 절약,
+        # 실패로 창을 다 썼으면 바로 다음 창으로). 상한은 넘지 않게.
+        remaining = (min(window_deadline, cap) - datetime.now()).total_seconds()
+        wait = max(1, remaining)
         nxt = datetime.now() + timedelta(seconds=wait)
         if TUI:
             # 실패/지난수면이어도 마지막 성공 기록(last_*)을 카드에 계속 표시
