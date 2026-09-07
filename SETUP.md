@@ -54,3 +54,14 @@ caffeinate -s ./scripts/tonight.sh --tui
 - **블루투스 권한**: 첫 `oura scan` 시 터미널에 블루투스 권한 허용.
 - **Vault 토큰**: `restore_from_vault.py` 는 `VAULT_TOKEN` 환경변수 또는 `~/.claude/.mcp.json` 의 vault 설정에서 토큰을 읽음. 맥미니에 둘 중 하나 필요.
 - 취침 시: 아이폰 블루투스 OFF, 무음 OFF, 링 착용.
+
+## 재부팅에도 유지되게 (맥미니 상주화)
+```bash
+SESSION_HOUR=22 ./scripts/install_service.sh    # 매일 22시 세션 + 웹 24h 상주
+# 해제: ./scripts/install_service.sh uninstall
+# 상태: launchctl list | grep wakeready
+```
+- **웹서버**: 부팅 시 자동 + KeepAlive(죽으면 재시작), 24시간 → 폰에서 언제든 상태 확인.
+- **야간세션**: 매일 `SESSION_HOUR`시에 자동 시작(폴링). 기상(알람)하면 종료, 다음날 또 시작.
+- 재부팅해도 유지됨(LaunchAgent, RunAtLoad).
+- 전제: 맥미니 **자동 로그인**(LaunchAgent는 로그인 세션 필요) + **슬립 금지** `sudo pmset -a sleep 0`.
