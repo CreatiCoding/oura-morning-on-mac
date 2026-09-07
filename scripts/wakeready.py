@@ -49,10 +49,12 @@ def _load_dotenv():
 _load_dotenv()
 
 # ---- 설정 (환경변수로 오버라이드) ----
-OURA_BIN = os.environ.get(
-    "OURA_BIN",
-    str(Path.home() / "workspaces/toy-projects/open_oura/target/release/oura"),
-)
+# 바이너리 경로: setup.sh 가 만드는 ./bin/oura 심볼릭 링크 우선(이식성),
+# 없으면 개발 기본 경로. OURA_BIN 환경변수로 오버라이드 가능.
+_default_oura = ROOT / "bin" / "oura"
+if not _default_oura.exists():
+    _default_oura = Path.home() / "workspaces/toy-projects/open_oura/target/release/oura"
+OURA_BIN = os.environ.get("OURA_BIN", str(_default_oura))
 KEY_FILE = os.environ.get("KEY_FILE", str(ROOT / "key.hex"))
 DB = os.environ.get("DB", str(ROOT / "data" / "oura.db"))
 LOG_DIR = Path(os.environ.get("LOG_DIR", str(ROOT / "logs")))
