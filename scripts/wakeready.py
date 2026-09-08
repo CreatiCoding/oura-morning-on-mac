@@ -513,6 +513,7 @@ def main():
     # 지난 수면으로 보고 알람 미발동. 오늘 자면 종료시점이 ~지금이 되어 판정 대상이 됨.
     fails = 0
     last_hours = None   # 마지막 성공 폴링 기록 (연결 실패 시에도 카드에 계속 표시)
+    last_disp_h = last_disp_e = None   # 마지막으로 화면에 보여준 값(지난 수면 포함, 표시 전용)
     last_est = None
     # 재시작해도 직전 세션의 마지막 데이터를 이어서 표시 (status.json 복원)
     try:
@@ -540,9 +541,10 @@ def main():
 
         # 이번 폴링 창: 성공할 때까지 이 시간까지 계속 재시도 (상한은 넘지 않게)
         window_deadline = min(now + timedelta(minutes=POLL_INTERVAL_MIN), cap)
-        # 동기화 중에도 마지막 성공 기록은 유지해서 보여줌
-        show(phase="syncing" if last_hours is None else "result",
-             hours=last_hours, est=last_est,
+        # 동기화 중에도 마지막으로 화면에 보여준 값(지난 수면 포함)은 유지해서
+        # 웹/TUI 가 비어 보이지 않게 함. 판정용 last_hours 와는 별개.
+        show(phase="syncing" if last_disp_h is None else "result",
+             hours=last_disp_h, est=last_disp_e,
              status="🔗 동기화 시도 중 (성공까지 반복)...", cap=cap, fails=fails)
         hours, est, bp = do_poll(window_deadline)
         status = ""
@@ -578,6 +580,8 @@ def main():
         # 폴링 실패면 마지막 성공 기록 유지
         disp_h = hours if hours is not None else last_hours
         disp_e = est if hours is not None else last_est
+        if disp_h is not None:
+            last_disp_h, last_disp_e = disp_h, disp_e
         show(phase="result", hours=disp_h, est=disp_e, status=status,
              cap=cap, next_poll=nxt, fails=fails)
         if not TUI:
