@@ -137,6 +137,8 @@ caffeinate -s ./scripts/tonight.sh --tui
 | `no matching Oura ring found` | 아이폰 블루투스 OFF? 링 착용? 맥이 가까이? (10분 창 안에서 자동 재시도됨) |
 | 아이폰에서 노래 안 울림 | 단축어 자동화 "즉시 실행"인지, 트리거 단어 `WAKEREADY` 일치, 무음 OFF |
 | 웹페이지 안 열림 | `tonight.sh` 실행 중인지(웹서버 같이 뜸), 같은 와이파이인지 |
+| `timed out connecting to the ring` (스캔은 되는데 연결만 실패) | 다른 맥이 링과 먼저 본딩돼 있으면 새 맥은 거절됨. 그 맥의 시스템 설정 > Bluetooth에서 "Oura Ring 5" 제거 → 링을 충전기에 올리고 `./bin/oura --key-file key.hex info` → 페어링 팝업 허용. 초기화 불필요 |
+| 야간 세션(launchd)만 매번 실패, 3분씩 멈춤 | `oura` 자체의 블루투스 권한 팝업을 허용해야 함 (시스템 설정 > 개인정보 보호 및 보안 > Bluetooth) |
 | 지금 상태만 빨리 보고 싶다 | `python3 scripts/wakeready.py --once` |
 | 알람만 테스트 | `python3 scripts/wakeready.py --test-alarm` |
 

@@ -23,6 +23,7 @@ cd ~/workspaces/oura-morning-on-mac
 - 팝업 없이 실패하면: 시스템 설정 → 개인정보 보호 및 보안 → Bluetooth → 사용 중인 터미널 앱 추가
 - **링이 아이폰과 연결 중이면 광고를 안 해서 스캔에 안 잡힐 수 있음** → 아이폰 블루투스를 잠시 끄고 재시도
 - 성공 기준: `Oura` 이름의 기기가 목록에 표시
+- **스캔은 되는데 `info`가 `timed out connecting to the ring`으로 끝나면**: 링이 다른 맥과 이미 본딩된 상태(Ring 5는 아이폰 외 맥 1대만 받는 것으로 보임). 그 맥의 시스템 설정 > Bluetooth에서 "Oura Ring 5" 제거 → 링을 충전기에 올림 → 이 맥에서 `./bin/oura --key-file key.hex info` → macOS 페어링 팝업 허용. 이 맥의 Bluetooth 목록에 링이 등록되면 끝. 공장초기화 불필요.
 
 ## 3. 다음 단계 (M1) 사전 지식
 
@@ -51,7 +52,8 @@ caffeinate -s ./scripts/tonight.sh --tui
 ### 맥미니에서 꼭 확인할 것
 - **BLE 근접**: 폴링하는 맥은 **침대 BLE 범위(~5m) 내**여야 함. 맥미니가 다른 방 서버면 착용한 링을 못 읽음 → 이 경우 폴링은 침대 옆 맥에서, 웹/라벨수집만 서버에서.
 - **iMessage 로그인**: 맥미니가 아이폰과 같은 Apple ID 로 iMessage 로그인돼 있어야 알람 발송됨.
-- **블루투스 권한**: 첫 `oura scan` 시 터미널에 블루투스 권한 허용.
+- **블루투스 권한**: 첫 `oura scan` 시 터미널에 블루투스 권한 허용. **launchd 세션은 별도**: `oura` 자체에 대한 권한 팝업("oura에서 블루투스를 사용하려고 합니다")이 한 번 더 뜨며, 허용 전까지 세션 폴링이 3분씩 멈춤.
+- **다른 맥에서 먼저 쓰던 링이면**: 그 맥의 Bluetooth 목록에서 링을 제거해야 맥미니가 연결됨(위 2절 참고).
 - **Vault 토큰**: `restore_from_vault.py` 는 `VAULT_TOKEN` 환경변수 또는 `~/.claude/.mcp.json` 의 vault 설정에서 토큰을 읽음. 맥미니에 둘 중 하나 필요.
 - 취침 시: 아이폰 블루투스 OFF, 무음 OFF, 링 착용.
 
