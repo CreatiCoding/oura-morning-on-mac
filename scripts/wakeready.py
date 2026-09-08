@@ -134,10 +134,17 @@ def cap_datetime():
     return cap
 
 
+# sync 는 밀린 이벤트(첫날·오래 미동기화)를 다 빼낼 때까지 걸리므로 제한을 길게 둔다.
+# 180초로 자르면 커서는 보존되지만 매번 "실패"로 집계되어 status.json 이 갱신되지 않는다.
+OURA_CMD_TIMEOUT_SEC = float(os.environ.get("OURA_CMD_TIMEOUT_SEC", "180"))
+SYNC_TIMEOUT_SEC = float(os.environ.get("SYNC_TIMEOUT_SEC", "900"))
+
+
 def run_oura(*args, capture=True):
     cmd = [OURA_BIN, "--scan-timeout", SCAN_TIMEOUT, "--key-file", KEY_FILE,
            "--db", DB, *args]
-    return subprocess.run(cmd, capture_output=capture, text=True, timeout=180)
+    timeout = SYNC_TIMEOUT_SEC if args and args[0] == "sync" else OURA_CMD_TIMEOUT_SEC
+    return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
 
 
 BLE_GAP_SEC = float(os.environ.get("BLE_GAP_SEC", "12"))   # BLE 명령 사이 재광고 대기
