@@ -179,6 +179,7 @@ def poll_window(deadline):
     emit("🔗 링 연결·동기화 시도 중...")
     t0 = time.time()
     n = 0
+    last_err = ""
     while datetime.now() < deadline:
         n += 1
         # 첫 시도와 이후 4회마다 sleep-analyze(수면 재분석 갱신), 나머지는 sync만(빠름)
@@ -186,12 +187,13 @@ def poll_window(deadline):
         if ok:
             emit(f"⟳ 동기화 완료 ({time.time()-t0:.0f}초, {n}회째)")
             return latest_sleep_hours()
+        last_err = (err or "").strip().splitlines()[-1][:120] if err else ""
         rem = (deadline - datetime.now()).total_seconds()
         if rem <= 0:
             break
         emit(f"↻ {n}회 실패 — {ATTEMPT_GAP_SEC:.0f}초 후 재시도")
         time.sleep(min(ATTEMPT_GAP_SEC, rem))
-    log("폴링 창 내 모든 시도 실패", attempts=n)
+    log("폴링 창 내 모든 시도 실패", attempts=n, last_error=last_err)
     return None
 
 
@@ -404,10 +406,11 @@ def do_poll(deadline):
         bp = latest_bedtime_period() if hours is not None else None
     if hours is None:
         return None, None, None
-    est = estimate_stages() if HEALTHY_MODE else None
-    # 헤드라인/판정의 '총 수면'은 창(bedtime_period)이 아니라 실제 잔 시간(깬시간 제외).
-    # 오피셜 '총 수면'과 같은 정의. est 있으면 그 값 사용.
-    if est and est.get("total_sleep_hours"):
+    # 수면단계 추정은 모드와 무관하게 항상 계산해서 웹/TUI 에 표시(DB 만 읽음, 링 통신 없음).
+    est = estimate_stages()
+    # 헤드라인/판정의 '총 수면'을 실제 잔 시간(깬시간 제외)으로 바꾸는 건 건강모드에서만.
+    # 총시간 모드는 기존대로 bedtime_period 기준을 유지해 판정이 바뀌지 않게 한다.
+    if HEALTHY_MODE and est and est.get("total_sleep_hours"):
         hours = est["total_sleep_hours"]
 
     # 터미널 실시간 요약(누적 수면 + 품질) — TUI 모드에선 카드가 대신함
