@@ -335,7 +335,9 @@ function render(){
   $('hours').textContent=h.toFixed(1);$('target').textContent=' / '+T+'h';
   $('bar').style.width=Math.min(100,100*h/T)+'%';$('meter').setAttribute('aria-valuenow',h.toFixed(1));
   const bs=v.bedtime_start?v.bedtime_start.slice(11,16):'',be=v.bedtime_end?v.bedtime_end.slice(11,16):'';
-  $('sub').textContent=((live&&curSrc==='local'&&h<T)?('목표까지 '+(T-h).toFixed(1)+'h 남음 · '):'')+'취침 '+bs+' → '+(be||'…')+(v.efficiency!=null?' · 효율 '+Math.round(v.efficiency)+'%':'');
+  const KO={DEEP:'깊은수면',LIGHT:'얕은수면',REM:'REM 수면',WAKE:'깸'};
+  const nowStage=(live&&curSrc==='local'&&st.estimate&&st.estimate.current_stage)?(' · 지금 '+(KO[st.estimate.current_stage]||st.estimate.current_stage)):'';
+  $('sub').textContent=((live&&curSrc==='local'&&h<T)?('목표까지 '+(T-h).toFixed(1)+'h 남음 · '):'')+'취침 '+bs+' → '+(be||'…')+(v.efficiency!=null?' · 효율 '+Math.round(v.efficiency)+'%':'')+nowStage;
   const[ql,qc]=quality(v);$('qual').innerHTML='<span style="color:'+qc+'">'+ql+'</span>';
   $('live').classList.toggle('hidden',!live);
   const src=$('src');src.className='src'+(curSrc==='cloud'?' cloud':'');

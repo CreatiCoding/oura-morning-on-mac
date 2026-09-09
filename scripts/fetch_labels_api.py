@@ -12,6 +12,7 @@
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
@@ -21,19 +22,53 @@ OUT = ROOT / "data" / "training"
 DB = ROOT / "data" / "oura.db"
 
 
-def _token():
-    t = os.environ.get("OURA_API_TOKEN", "")
-    if t:
-        return t
-    env = ROOT / ".env"          # 웹서버(launchd) 등 .env 를 안 거친 호출 대비
-    if env.exists():
-        for line in env.read_text().splitlines():
-            if line.startswith("OURA_API_TOKEN="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
+ENV = ROOT / ".env"
+
+
+def _env(key):
+    """환경변수 → .env 순으로 읽는다(웹서버(launchd) 등 .env 를 안 거친 호출 대비)."""
+    v = os.environ.get(key, "")
+    if v or not ENV.exists():
+        return v
+    for line in ENV.read_text().splitlines():
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
     return ""
 
 
-TOKEN = _token()
+def _save_env(updates):
+    lines = ENV.read_text().splitlines() if ENV.exists() else []
+    out = [l for l in lines if not any(l.startswith(k + "=") for k in updates)]
+    out += [f"{k}={v}" for k, v in updates.items()]
+    ENV.write_text("\n".join(out) + "\n")
+    os.chmod(ENV, 0o600)
+
+
+def refresh_token():
+    """액세스 토큰 만료(401) 시 OURA_REFRESH_TOKEN 으로 재발급해 .env 에 저장. 성공 시 새 토큰, 실패 시 ''."""
+    import urllib.parse
+    cid, csec, rt = _env("OURA_CLIENT_ID"), _env("OURA_CLIENT_SECRET"), _env("OURA_REFRESH_TOKEN")
+    if not (cid and csec and rt):
+        print("토큰 만료됐는데 리프레시 정보(OURA_CLIENT_ID/SECRET/REFRESH_TOKEN) 없음 → oura_oauth.py 재실행 필요")
+        return ""
+    data = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": rt,
+                                   "client_id": cid, "client_secret": csec}).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                "https://api.ouraring.com/oauth/token", data=data), timeout=20) as r:
+            tok = json.loads(r.read())
+    except Exception as e:
+        print(f"토큰 갱신 실패: {e} → oura_oauth.py 재실행 필요"); return ""
+    at = tok.get("access_token")
+    if not at:
+        print(f"토큰 갱신 응답에 access_token 없음: {tok}"); return ""
+    _save_env({"OURA_API_TOKEN": at, "OURA_REFRESH_TOKEN": tok.get("refresh_token") or rt})
+    os.environ["OURA_API_TOKEN"] = at
+    print("[✓] 액세스 토큰 자동 갱신 → .env 저장")
+    return at
+
+
+TOKEN = _env("OURA_API_TOKEN")
 API = "https://api.ouraring.com/v2/usercollection/sleep"
 # Oura API sleep_phase_5_min 인코딩: 1=deep, 2=light, 3=rem, 4=awake
 PHASE = {"1": "DEEP", "2": "LIGHT", "3": "REM", "4": "WAKE"}
@@ -45,12 +80,22 @@ def main():
     end = sys.argv[2] if len(sys.argv) > 2 else str(date.today())
     start = sys.argv[1] if len(sys.argv) > 1 else str(date.today() - timedelta(days=7))
     url = f"{API}?start_date={start}&end_date={end}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read())
-    except Exception as e:
-        print(f"API 호출 실패: {e}"); sys.exit(1)
+    token = TOKEN
+    data = None
+    for attempt in (1, 2):
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = json.loads(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt == 1:
+                token = refresh_token()
+                if token:
+                    continue
+            print(f"API 호출 실패: {e}"); sys.exit(1)
+        except Exception as e:
+            print(f"API 호출 실패: {e}"); sys.exit(1)
 
     # 1) 클라우드 정규화 데이터 → 로컬 DB(wr_sleep_nights/epochs, source='cloud'). 낮잠 포함 전부.
     stored = 0

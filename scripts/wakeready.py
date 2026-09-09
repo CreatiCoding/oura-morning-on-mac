@@ -75,6 +75,15 @@ HEALTHY_MODE = os.environ.get("HEALTHY_MODE", "0") == "1"
 REM_MIN_MIN = float(os.environ.get("REM_MIN_MIN", "70"))
 DEEP_MIN_MIN = float(os.environ.get("DEEP_MIN_MIN", "55"))
 
+# 스마트 기상 창: 목표 도달 WAKE_WINDOW_MIN 분 전부터 '지금 단계'를 보고, 얕은수면/REM/깸이면 깨우고
+# 깊은수면이면 기다린다. 목표를 넘겨도 깊은수면이면 최대 DEEP_WAIT_MAX_MIN 분 더 기다린 뒤 깨운다.
+# 창 안에서는 폴링을 WINDOW_POLL_MIN 분으로 촘촘히. 단계 총량(REM 몇 분) 오차에 덜 흔들리는 판정.
+# WAKE_WINDOW_MIN=0 이면 끔(기존 총량 기준만). 안전 상한 시각은 언제나 우선.
+WAKE_WINDOW_MIN = float(os.environ.get("WAKE_WINDOW_MIN", "30"))
+DEEP_WAIT_MAX_MIN = float(os.environ.get("DEEP_WAIT_MAX_MIN", "20"))
+WINDOW_POLL_MIN = float(os.environ.get("WINDOW_POLL_MIN", "5"))
+EASY_STAGES = {"LIGHT", "REM", "WAKE"}   # 이 단계면 깨우기 쉬움(수면 관성 적음)
+
 # ---- 테스트/디버그 플래그 (CLI) ----
 #   --once         : 폴링 1회만 하고 현재 상태 출력 후 종료 (연결/판정 빠른 점검)
 #   --test-alarm   : 즉시 알람만 발동하고 종료 (알람 경로 테스트)
@@ -97,6 +106,7 @@ DRY_RUN = _flag("--dry-run")
 VERBOSE = _flag("--verbose")
 TUI = _flag("--tui")
 SIMULATE_HOURS = _opt("--simulate", float, None)
+SIMULATE_STAGE = _opt("--simulate-stage", str, None)   # 판정 테스트용: 현재 단계 강제 (DEEP/LIGHT/REM/WAKE)
 _poll_override = _opt("--poll", float, None)
 if _poll_override is not None:
     POLL_INTERVAL_MIN = _poll_override / 60.0
@@ -290,17 +300,56 @@ def fire_alarm(reason):
         os.system('say "Wake up. WakeReady fallback alarm." 2>/dev/null')
 
 
-def check_wake(hours, est):
-    """기상 조건 충족 여부와 사유 문자열. (fire여부, reason)"""
+_target_met_at = None   # 기준 총량을 처음 충족한 시각 (깊은수면 대기 상한 계산용)
+
+
+def base_met(hours, est):
+    """기존 총량 기준: 총시간(건강모드는 + REM/깊은 임계) 충족 여부."""
     if HEALTHY_MODE:
-        if est and hours >= TARGET_SLEEP_HOURS \
-                and est["rem_min"] >= REM_MIN_MIN \
-                and est["deep_min"] >= DEEP_MIN_MIN:
-            return True, (f"건강 수면 충족 — 총 {hours:.2f}h, REM {est['rem_min']}분, "
-                          f"깊은 {est['deep_min']}분 (추정) — 기상!")
-    elif hours >= TARGET_SLEEP_HOURS:
-        return True, f"목표 수면 {TARGET_SLEEP_HOURS}h 충족 (감지 {hours:.2f}h) — 기상!"
-    return False, None
+        return bool(est and hours >= TARGET_SLEEP_HOURS
+                    and est["rem_min"] >= REM_MIN_MIN and est["deep_min"] >= DEEP_MIN_MIN)
+    return hours >= TARGET_SLEEP_HOURS
+
+
+def check_wake(hours, est):
+    """(fire, reason, state). state: 'wait' | 'window'(창 안, 깊은수면 대기) | 'deep_wait'(목표 넘김, 깊은수면 대기).
+    1) 총량 기준(base_met) 충족 → 깨움. 단 지금 깊은수면이면 DEEP_WAIT_MAX_MIN 까지 대기.
+    2) 목표 WAKE_WINDOW_MIN 분 전부터 얕은수면/REM/깸이면 조금 일찍 깨움(수면 관성 적음).
+    현재 단계를 모르면(추정 실패) 1)의 총량 기준만 쓴다."""
+    global _target_met_at
+    stage = (est or {}).get("current_stage")
+    if SIMULATE_STAGE:
+        stage = SIMULATE_STAGE.upper()
+    met = base_met(hours, est)
+    detail = ""
+    if HEALTHY_MODE and est:
+        detail = f", REM {est['rem_min']}분, 깊은 {est['deep_min']}분 (추정)"
+    if met and _target_met_at is None:
+        _target_met_at = datetime.now()
+    if WAKE_WINDOW_MIN <= 0 or stage is None:
+        if met:
+            return True, f"목표 수면 {TARGET_SLEEP_HOURS}h 충족 (감지 {hours:.2f}h{detail}) — 기상!", "wait"
+        return False, None, "wait"
+    if met:
+        waited = (datetime.now() - _target_met_at).total_seconds() / 60 if _target_met_at else 0
+        if stage == "DEEP" and waited < DEEP_WAIT_MAX_MIN:
+            return False, None, "deep_wait"
+        why = "깊은수면 대기 상한 도달" if stage == "DEEP" else f"지금 {stage_ko(stage)}"
+        return True, (f"목표 수면 {TARGET_SLEEP_HOURS}h 충족 (감지 {hours:.2f}h{detail}) · {why} — 기상!"), "wait"
+    # 목표 전 기상 창
+    remain_min = (TARGET_SLEEP_HOURS - hours) * 60
+    in_window = remain_min <= WAKE_WINDOW_MIN and (
+        not HEALTHY_MODE or (est and est["rem_min"] >= REM_MIN_MIN and est["deep_min"] >= DEEP_MIN_MIN))
+    if in_window:
+        if stage in EASY_STAGES:
+            return True, (f"기상 창 — 목표까지 {remain_min:.0f}분 남았지만 지금 {stage_ko(stage)}이라 "
+                          f"깨우기 좋음 (감지 {hours:.2f}h{detail}) — 기상!"), "wait"
+        return False, None, "window"
+    return False, None, "wait"
+
+
+def stage_ko(stage):
+    return {"DEEP": "깊은수면", "LIGHT": "얕은수면", "REM": "REM 수면", "WAKE": "깸"}.get(stage, str(stage))
 
 
 def _bar(cur, target, width=20):
@@ -480,6 +529,7 @@ def main():
     log(f"세션 시작 [{mode}]"
         + (" [DRY-RUN]" if DRY_RUN else ""),
         target_hours=TARGET_SLEEP_HOURS, poll_min=round(POLL_INTERVAL_MIN, 2),
+        wake_window_min=WAKE_WINDOW_MIN, deep_wait_max_min=DEEP_WAIT_MAX_MIN,
         cap_time=cap.isoformat(timespec="minutes"),
         rem_min=REM_MIN_MIN if HEALTHY_MODE else None,
         deep_min=DEEP_MIN_MIN if HEALTHY_MODE else None, db=DB)
@@ -504,15 +554,17 @@ def main():
                 log("판정 결과: 지난 수면(무시 대상)", stale=True,
                     end_gap_hours=round(gap, 1) if gap is not None else None)
             else:
-                fire, reason = check_wake(hours, est)
+                fire, reason, state = check_wake(hours, est)
                 log(f"판정 결과: {'🔔 기상조건 충족' if fire else '⏳ 아직 대기'}",
-                    would_fire=fire, reason=reason,
+                    would_fire=fire, reason=reason, state=state,
+                    current_stage=(SIMULATE_STAGE.upper() if SIMULATE_STAGE else (est or {}).get("current_stage")),
                     end_gap_hours=round(gap, 1) if gap is not None else None)
         return
 
     # 지난밤 데이터 가드: 수면 '종료'가 지금으로부터 STALE_AFTER_HOURS 이상 지났으면
     # 지난 수면으로 보고 알람 미발동. 오늘 자면 종료시점이 ~지금이 되어 판정 대상이 됨.
     fails = 0
+    poll_state = "wait"   # 'window'/'deep_wait' 면 다음 폴링을 WINDOW_POLL_MIN 으로 촘촘히
     last_hours = None   # 마지막 성공 폴링 기록 (연결 실패 시에도 카드에 계속 표시)
     last_disp_h = last_disp_e = None   # 마지막으로 화면에 보여준 값(지난 수면 포함, 표시 전용)
     last_est = None
@@ -541,7 +593,8 @@ def main():
             break
 
         # 이번 폴링 창: 성공할 때까지 이 시간까지 계속 재시도 (상한은 넘지 않게)
-        window_deadline = min(now + timedelta(minutes=POLL_INTERVAL_MIN), cap)
+        interval = WINDOW_POLL_MIN if poll_state in ("window", "deep_wait") else POLL_INTERVAL_MIN
+        window_deadline = min(now + timedelta(minutes=interval), cap)
         # 동기화 중에도 마지막으로 화면에 보여준 값(지난 수면 포함)은 유지해서
         # 웹/TUI 가 비어 보이지 않게 함. 판정용 last_hours 와는 별개.
         show(phase="syncing" if last_disp_h is None else "result",
@@ -564,8 +617,16 @@ def main():
                 status = f"⏸️ 지난 수면 (종료 {gap:.1f}h 전) — 오늘 수면 대기"
             else:
                 last_hours, last_est = hours, est   # 마지막 성공 기록 저장
-                fire, reason = check_wake(hours, est)
-                status = "🔔 기상!" if fire else "⏳ 목표까지 대기 중"
+                fire, reason, poll_state = check_wake(hours, est)
+                cur = (est or {}).get("current_stage")
+                if fire:
+                    status = "🔔 기상!"
+                elif poll_state == "window":
+                    status = f"🕰️ 기상 창 — 지금 {stage_ko(cur)}, 얕아지면 깨움"
+                elif poll_state == "deep_wait":
+                    status = f"🕰️ 목표 충족 — 깊은수면이라 최대 {DEEP_WAIT_MAX_MIN:.0f}분 대기"
+                else:
+                    status = "⏳ 목표까지 대기 중" + (f" · 지금 {stage_ko(cur)}" if cur else "")
                 if fire:
                     show(phase="result", hours=hours, est=est, status=status, cap=cap)
                     fire_alarm(reason)

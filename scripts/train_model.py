@@ -86,6 +86,7 @@ def night_dataset(se, db, offset, lab):
 # 2026-09-09 5밤 LOO 비교로 고른 설정: 얕은 트리(depth2)·느린 학습(300회, lr .03)·균형 가중치
 # + 비터비(self_bias 0.5). 에폭 일치율 66→72%, REM/깊은 총분 절대오차 46/39 → 28/26분.
 SELF_BIAS = 0.5
+REPLACE_TOLERANCE = 2.0   # %p
 
 
 def make_clf():
@@ -223,16 +224,30 @@ def main():
     if not save:
         print("\n--no-save: 모델 저장 안 함"); return
     MODEL_OUT.parent.mkdir(parents=True, exist_ok=True)
-    better = sum_m >= sum_h
+    # 교체 가드: 휴리스틱보다 나아야 하고, 직전 모델의 검증 일치율보다 REPLACE_TOLERANCE 이상 나빠지면 안 됨
+    # (밤이 늘면 검증 집합이 달라져 1~2%p 는 노이즈). 교체 시 직전 모델은 .prev.pkl 로 백업.
+    prev_acc = None
+    if MODEL_OUT.exists():
+        try:
+            with open(MODEL_OUT, "rb") as f:
+                prev_acc = pickle.load(f).get("meta", {}).get("cv_acc_model")
+        except Exception:
+            prev_acc = None
+    new_acc = sum_m / k
+    better = new_acc >= sum_h / k and (prev_acc is None or new_acc >= prev_acc - REPLACE_TOLERANCE)
     if better:
+        if MODEL_OUT.exists():
+            MODEL_OUT.replace(MODEL_OUT.with_suffix(".prev.pkl"))
         with open(MODEL_OUT, "wb") as f:
             pickle.dump(dict(final, meta=summary), f)
-        print(f"\n[✓] 모델 저장 → {MODEL_OUT}  ({k}밤, {n_samples}에폭) — sleep_estimate 가 자동 사용")
+        print(f"\n[✓] 모델 저장 → {MODEL_OUT}  ({k}밤, {n_samples}에폭"
+              + (f", 직전 {prev_acc:.1f}% → {new_acc:.1f}%" if prev_acc is not None else "") + ") — sleep_estimate 가 자동 사용")
+    elif prev_acc is not None:
+        print(f"\n[!] 새 모델 {new_acc:.1f}% < 직전 {prev_acc:.1f}% − {REPLACE_TOLERANCE}%p → 기존 모델 유지")
     else:
-        if MODEL_OUT.exists():
-            MODEL_OUT.unlink()
-        print(f"\n[!] 모델이 휴리스틱보다 못함 → 저장 안 함(기존 모델 제거). 휴리스틱 계속 사용")
+        print(f"\n[!] 모델이 휴리스틱보다 못함 → 저장 안 함. 휴리스틱 계속 사용")
     summary["model_saved"] = better
+    summary["prev_cv_acc_model"] = prev_acc
     REPORT_OUT.write_text(json.dumps(summary, ensure_ascii=False, indent=1))
     print(f"    리포트 → {REPORT_OUT}")
 

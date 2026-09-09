@@ -18,7 +18,8 @@
    웹: wakeready→status.json→web.py(:8777)→폰 브라우저(QR)
 ```
 - `scripts/tonight.sh` — **진입점**. web.py + wakeready.py 를 함께 실행, 종료 시 정리.
-- `scripts/wakeready.py` — 야간 폴링 루프 + 판정 + 알람 트리거. `.env` 자동 로드. `--once/--test-alarm/--dry-run/--simulate/--poll/--tui/--verbose` 플래그.
+- `scripts/wakeready.py` — 야간 폴링 루프 + 판정 + 알람 트리거. `.env` 자동 로드. `--once/--test-alarm/--dry-run/--simulate/--simulate-stage/--poll/--tui/--verbose` 플래그.
+  판정 우선순위: 상한 시각 > 연결실패 폴백 > 목표 충족(깊은수면이면 ≤20분 대기) > 기상 창(목표 30분 전부터 얕은/REM이면 조기 기상). 상세는 USAGE.md '판정 기준'.
 - `scripts/sleep_estimate.py` — 수면창을 5분 격자로 잘라 IBI(박동간격)·움직임·체온 원본에서 피처 추출 → WAKE/LIGHT/DEEP/REM 추정. `models/sleep_clf.pkl`(개인화 모델) 있으면 그걸로, 없으면 휴리스틱.
 - `scripts/train_model.py` — 공식 API 라벨(`fetch_labels_api.py`, `data/training/`)과 DB 신호를 `time_sync` 오프셋으로 절대시각 정렬해 학습. 밤 하나 빼기 검증 리포트 출력, 휴리스틱보다 나을 때만 저장. `tonight.sh`가 시작 시 자동 실행(토큰 있을 때).
 - `scripts/alarm.sh` — iMessage 트리거(+ntfy ACK 확인·폴백). 맥 스피커는 기본 off.

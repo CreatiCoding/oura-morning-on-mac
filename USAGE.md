@@ -77,6 +77,26 @@ IMESSAGE_REPEAT=1 bash scripts/alarm.sh "테스트"   # 알람만
 ## 다음(M5): launchd 상주화
 매일 지정 시각 자동 시작은 launchd 등록으로. (미구현)
 
+## 판정 기준 (언제 깨우나)
+우선순위 순서다. 위가 아래를 이긴다.
+1. **안전 상한 `CAP_TIME`(기본 09:00)** — 무조건 알람. 링 연결이 밤새 끊겨도 여기서는 반드시 울린다.
+2. **연결 실패 폴백** — 폴링 창 `MAX_FAILS_BEFORE_FALLBACK`(6)회 연속 실패 + 상한 30분 이내면 미리 알람.
+3. **목표 충족** — 총시간 모드(기본): 링의 수면 구간 길이(`bedtime_period`, 깬 시간 포함) ≥ `TARGET_SLEEP_HOURS`(8h).
+   건강 모드(`HEALTHY_MODE=1`): 실제 잔 시간 ≥ 목표 **그리고** 추정 REM ≥ `REM_MIN_MIN`(70분), 깊은 ≥ `DEEP_MIN_MIN`(55분).
+   - 단, 그 순간 **깊은수면**이면 최대 `DEEP_WAIT_MAX_MIN`(20분) 더 기다렸다가 깨운다(수면 관성 회피).
+4. **스마트 기상 창** — 목표 `WAKE_WINDOW_MIN`(30분) 전부터, 지금 단계가 얕은수면/REM/깸이면 조금 일찍 깨운다.
+   깊은수면이면 창 안에서 `WINDOW_POLL_MIN`(5분) 간격으로 다시 보며 기다린다. `WAKE_WINDOW_MIN=0`이면 끔.
+   "지금 단계"는 마지막 동기화 시점의 최근 10분(2 에폭) 다수 단계이며, 추정이 없으면 3의 총량 기준만 쓴다.
+5. **지난 수면 가드** — 수면 종료가 `STALE_AFTER_HOURS`(3h) 이상 지났으면 지난 밤으로 보고 무시.
+
+총량(REM 몇 분)은 추정 오차가 ±25분쯤이라 3의 건강 모드는 여유 있게 잡고, 4의 "지금 단계" 판정이 실제
+기상 시점을 고르게 두는 구조다. 판정 로직 점검은 링 없이도 된다:
+```bash
+python3 scripts/wakeready.py --once --dry-run --simulate=7.7 --simulate-stage=DEEP   # 창 안·깊은수면 → 대기
+python3 scripts/wakeready.py --once --dry-run --simulate=7.7 --simulate-stage=LIGHT  # 창 안·얕은수면 → 기상
+python3 scripts/wakeready.py --once --dry-run --simulate=8.2 --simulate-stage=DEEP   # 목표 충족·깊은수면 → 최대 20분 대기
+```
+
 ## 개인화 수면단계 모델 (#2, 선택 — 정확도 향상)
 Oura의 공식 히프노그램(내 데이터)을 정답으로 내 원시신호에 맞춰 분류기를 학습한다.
 독점 모델/키는 안 건드리며, 학습 목표가 Oura 출력이라 잘 되면 근접해진다.
@@ -98,6 +118,10 @@ python3 scripts/oura_oauth.py
   움직임·체온 원본**에서 뽑는다(아티팩트 제거 후 RMSSD 는 링 자체값과 근접).
 - 리포트: "밤 하나 빼기" 검증으로 밤마다 휴리스틱 vs 모델의 에폭 일치율과 REM/깊은/깬 총분 오차를
   출력한다(`models/train_report.json`). 5밤 기준 실측: 일치율 50% → 72%, REM/깊은 총분 절대오차 ~25분(깬 시간 ~38분).
+- 모델 교체 가드: 휴리스틱보다 낫고 직전 모델의 검증 일치율보다 2%p 이상 나빠지지 않을 때만 교체.
+  직전 모델은 `models/sleep_clf.prev.pkl`로 백업.
+- 액세스 토큰이 만료(401)되면 `.env`의 리프레시 토큰으로 자동 재발급해 저장한다. 리프레시도 실패하면
+  `oura_oauth.py`를 다시 돌리라는 안내가 `logs/labels.out`에 남는다.
 - 라벨/모델은 내 데이터 → `data/`·`models/` gitignore.
 
 ### 데이터 3계층과 웹 표시 출처

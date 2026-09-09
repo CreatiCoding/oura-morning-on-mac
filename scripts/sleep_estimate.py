@@ -654,6 +654,20 @@ def nights_overview(db, min_hours=1.0, limit=60):
     return nights[:limit]
 
 
+def current_stage_info(epochs, stages, k=2):
+    """'지금' 단계: 데이터가 있는 마지막 k 에폭의 다수 단계 + 그 마지막 에폭이 수면창 끝에서 몇 분 전인지.
+    기상 창 판정(얕은수면/REM 이면 깨움)에 쓴다. 데이터 없으면 current_stage=None."""
+    idx = [i for i, e in enumerate(epochs) if e.get("hr", 0) > 0]
+    if not idx or not stages:
+        return {"current_stage": None, "stage_age_min": None, "recent_stages": []}
+    tail = idx[-k:]
+    recent = [stages[i] for i in tail]
+    stage = max(set(recent), key=recent.count) if recent else None
+    age = (len(epochs) - 1 - tail[-1]) * EPOCH_MIN
+    return {"current_stage": stage, "stage_age_min": age,
+            "recent_stages": [stages[i] for i in idx[-6:]]}
+
+
 def estimate_and_store(db):
     """오늘 밤 수면창 추정 → summarize 결과(+source/method) 반환하고 wr_ 테이블에도 저장.
     wakeready/web 이 쓰는 단일 진입점. 실패 시 None."""
@@ -666,6 +680,7 @@ def estimate_and_store(db):
         return None
     out = summarize(stages)
     out.update({"source": "local", "method": method})
+    out.update(current_stage_info(epochs, stages))
     try:
         store_local_night(db, win[0], win[1], epochs, stages, method)
     except Exception:
