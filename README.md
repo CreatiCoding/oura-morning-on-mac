@@ -117,7 +117,7 @@ caffeinate -s ./scripts/tonight.sh --tui
 
 **취침 전 체크리스트:**
 - 💍 링 착용
-- 📴 아이폰 **블루투스 OFF** (안 그러면 아이폰이 링을 점유해 맥이 못 읽음 — 알람 푸시는 와이파이라 무관)
+- 📴 아이폰 **블루투스 OFF — 반드시 설정 앱 > Bluetooth 에서** (제어 센터 토글은 새벽 5시에 iOS 가 자동으로 다시 켜서 아이폰이 링을 도로 가져감 — 알람 푸시는 와이파이라 무관)
 - 🔊 아이폰 **무음 스위치 OFF**
 - 📍 맥이 침대 근처(BLE 범위)
 
@@ -138,6 +138,7 @@ caffeinate -s ./scripts/tonight.sh --tui
 | 아이폰에서 노래 안 울림 | 단축어 자동화 "즉시 실행"인지, 트리거 단어 `WAKEREADY` 일치, 무음 OFF |
 | 웹페이지 안 열림 | `tonight.sh` 실행 중인지(웹서버 같이 뜸), 같은 와이파이인지 |
 | `timed out connecting to the ring` (스캔은 되는데 연결만 실패) | 다른 맥이 링과 먼저 본딩돼 있으면 새 맥은 거절됨. 그 맥의 시스템 설정 > Bluetooth에서 "Oura Ring 5" 제거 → 링을 충전기에 올리고 `./bin/oura --key-file key.hex info` → 페어링 팝업 허용. 초기화 불필요 |
+| 새벽 5시 전까진 되다가 5시 이후 폴링이 전부 실패 | 제어 센터에서 끈 블루투스를 iOS 가 05:00 에 자동으로 다시 켠 것. 설정 앱 > Bluetooth 에서 꺼야 밤새 유지됨 |
 | 야간 세션(launchd)만 매번 실패, 3분씩 멈춤 | `oura` 자체의 블루투스 권한 팝업을 허용해야 함 (시스템 설정 > 개인정보 보호 및 보안 > Bluetooth) |
 | 지금 상태만 빨리 보고 싶다 | `python3 scripts/wakeready.py --once` |
 | 알람만 테스트 | `python3 scripts/wakeready.py --test-alarm` |
