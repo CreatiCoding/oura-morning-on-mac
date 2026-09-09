@@ -44,6 +44,58 @@ ROOT = Path(__file__).resolve().parent.parent
 LOGD = Path(os.environ.get("LOG_DIR", str(ROOT / "logs")))
 STATUS = LOGD / "status.json"
 SYNC_REQ = LOGD / "sync_request"   # '지금 동기화' 요청 플래그 (wakeready 가 감지)
+DB = Path(os.environ.get("DB", str(ROOT / "data" / "oura.db")))
+import time as _time
+
+# 세션이 안 돌아 status.json 이 비거나 오래됐을 때, DB 에서 직접 수면단계를 추정해
+# UI 를 채우기 위한 헬퍼. wakeready.py 의 함수를 재사용(링 통신 없이 DB 만 읽음). 60초 캐시.
+_DBCACHE = {"t": 0.0, "data": None}
+_WK = None
+
+def _db_snapshot():
+    global _WK
+    now = _time.time()
+    if _DBCACHE["data"] is not None and now - _DBCACHE["t"] < 60:
+        return _DBCACHE["data"]
+    data = {"hours": None, "estimate": None}
+    try:
+        if _WK is None:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("wakeready_web", ROOT / "scripts" / "wakeready.py")
+            m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+            _WK = m
+        est = _WK.estimate_stages()
+        bp = _WK.latest_bedtime_period()
+        hours = (est.get("total_sleep_hours") if est else None)
+        if hours is None and bp:
+            try:
+                hours = float(bp["duration_hours"])
+            except Exception:
+                hours = None
+        data = {"hours": hours, "estimate": est}
+    except Exception:
+        pass
+    _DBCACHE.update(t=now, data=data)
+    return data
+
+def status_payload():
+    """status.json 을 읽되, hours/estimate 가 비어 있으면 DB 추정으로 채워 돌려준다."""
+    try:
+        d = json.loads(STATUS.read_text())
+    except Exception:
+        d = {}
+    if d.get("estimate") is None or d.get("hours") is None:
+        snap = _db_snapshot()
+        if d.get("estimate") is None and snap["estimate"] is not None:
+            d["estimate"] = snap["estimate"]
+            d["from_db"] = True   # UI 참고용: 라이브 폴링이 아니라 DB 추정으로 채운 값
+        if d.get("hours") is None and snap["hours"] is not None:
+            d["hours"] = snap["hours"]
+        d.setdefault("target_hours", 8.0)
+        d.setdefault("mode", "total")
+        if not d.get("status"):
+            d["status"] = "참고: 마지막 동기화 기준 추정 (세션 대기 중)"
+    return json.dumps(d, ensure_ascii=False)
 PORT = int(os.environ.get("PORT", os.environ.get("WEB_PORT", "8777")))
 
 PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -164,7 +216,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/status.json"):
             try:
-                self._send(STATUS.read_text(), "application/json; charset=utf-8")
+                self._send(status_payload(), "application/json; charset=utf-8")
             except Exception:
                 self._send("{}", "application/json; charset=utf-8")
         else:
