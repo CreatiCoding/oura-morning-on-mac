@@ -39,16 +39,175 @@ def bedtime_window(db):
         return None
 
 
-def load_epochs(db, start_ds=None, end_ds=None):
-    """hrv_event 를 시간순 (hr, rmssd) 에폭으로. 0값은 결측.
+def ring_offset(db):
+    """링 시계(deciseconds) → unix 변환 오프셋. unix = offset + ds/10.
 
-    ⚠️ 반드시 '오늘 밤 수면창(bedtime_period)' 안으로 스코프한다. 안 그러면 DB에 누적된
-    지난 날/주간 이벤트까지 세어 REM·깊은수면이 몇 배로 부풀려진다. (window 미지정 시 자동 감지)
-    """
+    링이 보내는 time_sync 이벤트({"unix_time":...})로 계산. 여러 개면 가장 최근 것.
+    (실측: 4일간 오프셋 편차 46초 이내 → 5분 에폭 정렬엔 충분.) 없으면 None."""
+    try:
+        con = sqlite3.connect(db)
+        row = con.execute(
+            "SELECT ring_timestamp, decoded_json FROM events WHERE name='time_sync' "
+            "ORDER BY ring_timestamp DESC LIMIT 1").fetchone()
+        con.close()
+        if not row or not row[1]:
+            return None
+        return json.loads(row[1])["unix_time"] - row[0] / 10.0
+    except Exception:
+        return None
+
+
+def night_windows(db, min_hours=1.0):
+    """DB 에 기록된 '밤'들의 (start_ds, end_ds) 목록(오래된 순).
+
+    bedtime_period 는 같은 밤에 대해 start 가 거의 같고 end 만 늘어나는 레코드가 반복된다.
+    start 가 ±10분 안이면 같은 밤으로 묶고 end 는 최댓값을 쓴다."""
+    try:
+        con = sqlite3.connect(db)
+        rows = con.execute(
+            "SELECT decoded_json FROM events WHERE name='bedtime_period' ORDER BY id").fetchall()
+        con.close()
+    except Exception:
+        return []
+    nights = []   # [start, end]
+    for (js,) in rows:
+        try:
+            v = json.loads(js); s, e = int(v["bedtime_start_ds"]), int(v["bedtime_end_ds"])
+        except Exception:
+            continue
+        for n in nights:
+            if abs(n[0] - s) <= 6000:      # 10분 = 6000 ds
+                n[0] = min(n[0], s); n[1] = max(n[1], e); break
+        else:
+            nights.append([s, e])
+    nights.sort()
+    return [(s, e) for s, e in nights if (e - s) / 36000.0 >= min_hours]
+
+
+def _rows(db, name, start_ds, end_ds):
+    con = sqlite3.connect(db)
+    rows = con.execute(
+        f"SELECT ring_timestamp, decoded_json FROM events WHERE name='{name}' "
+        "AND ring_timestamp BETWEEN ? AND ? ORDER BY ring_timestamp",
+        (start_ds, end_ds)).fetchall()
+    con.close()
+    out = []
+    for ts, js in rows:
+        try:
+            out.append((ts, json.loads(js)))
+        except Exception:
+            pass
+    return out
+
+
+def _clean_ibi(events, tol=0.2, max_diff=200):
+    """IBI 아티팩트 제거. PPG 는 박동 누락(약 2배 간격)·오검출이 흔해 그대로 쓰면 RMSSD 가
+    링 자체값의 5~10배로 부풀려진다(실측). 에폭 중앙값 ±tol 밖의 박동을 버리고, 인접차이는
+    같은 이벤트 안의 '살아남은 연속 박동' 사이 + |차이|≤max_diff 만 센다.
+    반환: (clean_beats, diffs, bad_fraction). 정리 후 값은 링 hrv_event 의 rmssd 와 근접."""
+    allb = [x for ev in events for x in ev]
+    if len(allb) < 10:
+        return allb, [], 0.0
+    med = st.median(allb)
+    lo, hi = med * (1 - tol), med * (1 + tol)
+    clean, diffs, nbad = [], [], 0
+    for ev in events:
+        prev = None
+        for x in ev:
+            if lo <= x <= hi:
+                clean.append(x)
+                if prev is not None and abs(x - prev) <= max_diff:
+                    diffs.append(x - prev)
+                prev = x
+            else:
+                nbad += 1; prev = None
+    return clean, diffs, nbad / len(allb)
+
+
+def build_epochs(db, start_ds, end_ds, epoch_min=EPOCH_MIN):
+    """수면창을 epoch_min 격자로 잘라, 각 에폭의 심박(IBI)·HRV·움직임·체온 피처를 만든다.
+
+    입력 이벤트(모두 링이 밤새 연속 기록):
+      ibi_and_amplitude_event  ~6.6초마다 6박동(ibi_ms)  → hr, rmssd, sdnn, ibi_cv, n_beats
+      sleep_acm_period         30초마다 acm_mad 6개       → motion(mean), motion_max, motion_frac
+      motion_event             움직임 감지 시            → motion_sec
+      temp_event               60초마다 temps_c 3개       → temp
+    격자는 start_ds 에서 시작하므로 공식 API 의 5분 히프노그램(bedtime_start 기준)과
+    인덱스가 1:1 로 맞는다(학습 정렬용). 데이터 없는 에폭은 hr=0(결측)."""
+    step = epoch_min * 60 * 10
+    n = max(0, int((end_ds - start_ds) // step))
+    if n <= 0:
+        return []
+    ibi = [[] for _ in range(n)]
+    mad = [[] for _ in range(n)]
+    msec = [0.0] * n
+    temp = [[] for _ in range(n)]
+    def idx(ts):
+        i = int((ts - start_ds) // step)
+        return i if 0 <= i < n else None
+    for ts, v in _rows(db, "ibi_and_amplitude_event", start_ds, end_ds):
+        i = idx(ts)
+        if i is not None:
+            # 이벤트(연속 6박동) 단위로 보관: 인접차이는 같은 이벤트 안에서만 계산(이벤트 사이는 박동 누락)
+            ibi[i].append([x for x in v.get("ibi_ms", []) if 300 <= x <= 2000])
+    for ts, v in _rows(db, "sleep_acm_period", start_ds, end_ds):
+        i = idx(ts)
+        if i is not None:
+            mad[i].extend(v.get("acm_mad", []))
+    for ts, v in _rows(db, "motion_event", start_ds, end_ds):
+        i = idx(ts)
+        if i is not None:
+            msec[i] += float(v.get("motion_seconds", 0) or 0)
+    for ts, v in _rows(db, "temp_event", start_ds, end_ds):
+        i = idx(ts)
+        if i is not None:
+            temp[i].extend(t for t in v.get("temps_c", []) if 20 < t < 42)
+    epochs = []
+    for i in range(n):
+        raw = [x for ev in ibi[i] for x in ev]
+        b, diffs, bad = _clean_ibi(ibi[i])
+        if len(b) >= 10:
+            mean = st.mean(b)
+            hr = 60000.0 / mean
+            rmssd = (sum(d * d for d in diffs) / len(diffs)) ** 0.5 if diffs else 0.0
+            sdnn = st.pstdev(b) if len(b) > 1 else 0.0
+            cv = sdnn / mean if mean else 0.0
+        else:
+            hr = rmssd = sdnn = cv = 0.0
+            b = raw
+        m = mad[i]
+        epochs.append({
+            "ts": start_ds + i * step + step,   # 에폭 끝 시각(기존 hrv_event ts 관례와 동일)
+            "hr": round(hr, 1), "rmssd": round(rmssd, 1), "sdnn": round(sdnn, 1),
+            "ibi_cv": round(cv, 4), "n_beats": len(b), "ibi_bad": round(bad, 3),
+            "motion": (sum(m) / len(m)) if m else 0.0,
+            "motion_max": max(m) if m else 0.0,
+            "motion_frac": (sum(1 for x in m if x > 1.0) / len(m)) if m else 0.0,
+            "motion_sec": msec[i],
+            "temp": (sum(temp[i]) / len(temp[i])) if temp[i] else 0.0,
+        })
+    return epochs
+
+
+def load_epochs(db, start_ds=None, end_ds=None):
+    """오늘 밤 수면창(bedtime_period)의 5분 에폭 목록. IBI 원본이 있으면 격자 기반(build_epochs),
+    없으면(구 DB) 5분 hrv_event 기반으로 폴백.
+
+    ⚠️ 반드시 '오늘 밤 수면창' 안으로 스코프한다. 안 그러면 DB에 누적된 지난 날 이벤트까지
+    세어 REM·깊은수면이 몇 배로 부풀려진다. (window 미지정 시 자동 감지)"""
     if start_ds is None or end_ds is None:
         win = bedtime_window(db)
         if win:
             start_ds, end_ds = win
+    if start_ds is not None and end_ds is not None:
+        ep = build_epochs(db, start_ds, end_ds)
+        if sum(1 for e in ep if e["n_beats"] > 0) >= 3:
+            return ep
+    return _load_epochs_hrv(db, start_ds, end_ds)
+
+
+def _load_epochs_hrv(db, start_ds=None, end_ds=None):
+    """(폴백) hrv_event 를 시간순 (hr, rmssd) 에폭으로. 0값은 결측."""
     con = sqlite3.connect(db)
     if start_ds is not None and end_ds is not None:
         rows = con.execute(
@@ -71,9 +230,8 @@ def load_epochs(db, start_ds=None, end_ds=None):
         for i in range(n):
             hr = hrs[i] if i < len(hrs) else 0
             rm = rms[i] if i < len(rms) else 0
-            # 각 샘플에 근사 타임스탬프(마지막 샘플=envelope ts 기준 역산)
             ets = ts - (n - 1 - i) * ds_per_epoch
-            epochs.append({"hr": hr, "rmssd": rm, "ts": ets, "motion": 0.0})
+            epochs.append({"hr": hr, "rmssd": rm, "ts": ets, "motion": 0.0, "n_beats": 0})
     _attach_motion(db, epochs, start_ds, end_ds)
     return epochs
 
@@ -104,9 +262,7 @@ def _attach_motion(db, epochs, start_ds, end_ds):
         return
     mo.sort()
     half = EPOCH_MIN * 60 * 10 / 2
-    j = 0
     for e in epochs:
-        # 에폭 ts 근처(±2.5분) 모션들의 평균
         vals = [m for (t, m) in mo if abs(t - e["ts"]) <= half]
         if vals:
             e["motion"] = sum(vals) / len(vals)
@@ -124,23 +280,51 @@ def _smooth(stages, min_run=2):
 
 
 MODEL_PKL = Path(__file__).resolve().parent.parent / "models" / "sleep_clf.pkl"
-FEATURES = ["hr", "rmssd", "motion", "frac", "hr_z", "rm_z"]
+# 학습/추론 공용 피처. 순서 바꾸면 기존 models/sleep_clf.pkl 과 안 맞으니 재학습 필요.
+FEATURES = ["hr", "rmssd", "sdnn", "ibi_cv", "ibi_bad", "motion", "motion_max", "motion_frac", "motion_sec",
+            "temp_dev", "frac", "hr_z", "rm_z", "hr_lv", "hr_ctx", "rm_ctx", "mo_ctx", "has_data"]
+
+
+def _ctx(vals, i, w):
+    seg = [v for v in vals[max(0, i - w):i + w + 1] if v > 0]
+    return st.mean(seg) if seg else 0.0
 
 
 def epoch_features(epochs):
-    """에폭 → 피처 dict 리스트 (학습/추론 공용)."""
+    """에폭 → 피처 dict 리스트 (학습/추론 공용).
+
+    밤 안에서의 z-점수(hr_z, rm_z)와 ±3에폭 문맥 평균(*_ctx), 단기 HR 변동(hr_lv)을 포함해
+    개인·날짜별 절대값 차이에 덜 흔들리게 한다. has_data=0 이면 그 에폭은 결측(링 미측정)."""
     hrs = [e["hr"] for e in epochs if e["hr"] > 0]
     rms = [e["rmssd"] for e in epochs if e["rmssd"] > 0]
+    tps = [e.get("temp", 0) for e in epochs if e.get("temp", 0) > 0]
     hr_m = st.mean(hrs) if hrs else 0
     hr_sd = (st.pstdev(hrs) or 1) if len(hrs) > 1 else 1
     rm_m = st.mean(rms) if rms else 0
     rm_sd = (st.pstdev(rms) or 1) if len(rms) > 1 else 1
+    tp_med = st.median(tps) if tps else 0
     n = len(epochs)
-    return [{
-        "hr": e["hr"], "rmssd": e["rmssd"], "motion": e.get("motion", 0),
-        "frac": i / max(1, n - 1),
-        "hr_z": (e["hr"] - hr_m) / hr_sd, "rm_z": (e["rmssd"] - rm_m) / rm_sd,
-    } for i, e in enumerate(epochs)]
+    hr_series = [e["hr"] for e in epochs]
+    rm_series = [e["rmssd"] for e in epochs]
+    mo_series = [e.get("motion", 0) for e in epochs]
+    out = []
+    for i, e in enumerate(epochs):
+        w = [hr_series[j] for j in range(max(0, i - 2), min(n, i + 3)) if hr_series[j] > 0]
+        out.append({
+            "hr": e["hr"], "rmssd": e["rmssd"],
+            "sdnn": e.get("sdnn", 0), "ibi_cv": e.get("ibi_cv", 0), "ibi_bad": e.get("ibi_bad", 0),
+            "motion": e.get("motion", 0), "motion_max": e.get("motion_max", 0),
+            "motion_frac": e.get("motion_frac", 0), "motion_sec": e.get("motion_sec", 0),
+            "temp_dev": (e.get("temp", 0) - tp_med) if e.get("temp", 0) > 0 else 0,
+            "frac": i / max(1, n - 1),
+            "hr_z": (e["hr"] - hr_m) / hr_sd if e["hr"] > 0 else 0,
+            "rm_z": (e["rmssd"] - rm_m) / rm_sd if e["rmssd"] > 0 else 0,
+            "hr_lv": st.pstdev(w) if len(w) >= 2 else 0,
+            "hr_ctx": _ctx(hr_series, i, 3), "rm_ctx": _ctx(rm_series, i, 3),
+            "mo_ctx": _ctx(mo_series, i, 3),
+            "has_data": 1 if e["hr"] > 0 else 0,
+        })
+    return out
 
 
 def classify_model(epochs):
@@ -154,7 +338,10 @@ def classify_model(epochs):
         clf, feats = bundle["clf"], bundle["features"]
         rows = epoch_features(epochs)
         X = [[r[k] for k in feats] for r in rows]
-        return _smooth(list(clf.predict(X)))
+        pred = [str(x) for x in clf.predict(X)]
+        # 결측 에폭(링 미측정)은 휴리스틱과 같이 WAKE 로 — 모델이 '없음=수면'을 배우지 않게 학습에서도 제외됨
+        pred = [("WAKE" if r["has_data"] == 0 else s) for r, s in zip(rows, pred)]
+        return _smooth(pred)
     except Exception:
         return None
 

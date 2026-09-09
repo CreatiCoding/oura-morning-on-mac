@@ -19,7 +19,8 @@
 ```
 - `scripts/tonight.sh` — **진입점**. web.py + wakeready.py 를 함께 실행, 종료 시 정리.
 - `scripts/wakeready.py` — 야간 폴링 루프 + 판정 + 알람 트리거. `.env` 자동 로드. `--once/--test-alarm/--dry-run/--simulate/--poll/--tui/--verbose` 플래그.
-- `scripts/sleep_estimate.py` — HR/HRV/모션 → WAKE/LIGHT/DEEP/REM 휴리스틱 추정(공식 모델 없음).
+- `scripts/sleep_estimate.py` — 수면창을 5분 격자로 잘라 IBI(박동간격)·움직임·체온 원본에서 피처 추출 → WAKE/LIGHT/DEEP/REM 추정. `models/sleep_clf.pkl`(개인화 모델) 있으면 그걸로, 없으면 휴리스틱.
+- `scripts/train_model.py` — 공식 API 라벨(`fetch_labels_api.py`, `data/training/`)과 DB 신호를 `time_sync` 오프셋으로 절대시각 정렬해 학습. 밤 하나 빼기 검증 리포트 출력, 휴리스틱보다 나을 때만 저장. `tonight.sh`가 시작 시 자동 실행(토큰 있을 때).
 - `scripts/alarm.sh` — iMessage 트리거(+ntfy ACK 확인·폴백). 맥 스피커는 기본 off.
 - `scripts/web.py` — stdlib 웹서버. status.json 표시 + "지금 동기화" 버튼(→sync_request 플래그).
 - `scripts/_qr.py` — 접속 QR(터미널). `scripts/setup.sh` — open_oura 빌드.
@@ -52,8 +53,12 @@
   `STALE_AFTER_HOURS`+ 지났으면 지난 수면으로 보고 알람 미발동(오늘 새 수면만 판정).
 - **연결 간헐성**: 착용 중 링 광고가 드물어 단발 스캔 성공률이 낮음 → 창 내 반복으로 보완.
   맥은 침대 가까이. 밤새 BLE가 끊겨도 안전 상한 시각엔 반드시 알람.
-- **REM/깊은수면은 추정치**: 공식 SleepNet 모델(서버 키 필요)이 없어 원시신호 휴리스틱.
-  임계값(`REM_MIN_MIN`/`DEEP_MIN_MIN`)은 며칠 로그로 사용자별 보정 권장.
+- **REM/깊은수면은 추정치**: 공식 SleepNet 모델(서버 키 필요)이 없어 원시신호 휴리스틱/개인화 모델.
+  임계값(`REM_MIN_MIN`/`DEEP_MIN_MIN`)은 며칠 로그로 사용자별 보정 권장. 2026-09-09 5밤 검증:
+  에폭 일치율 휴리스틱 50% → 모델 66%, REM/깊은 총분 절대오차 ~40분(밤이 더 쌓여야 줄어듦).
+- **IBI 원본은 아티팩트가 많다**: 박동 누락(2배 간격)·오검출 때문에 그대로 RMSSD 를 내면 링 자체값의
+  5~10배. `_clean_ibi`(에폭 중앙값 ±20% 밖 제거, 같은 이벤트 안 인접차이만) 후엔 근접. 링 시계는
+  `time_sync` 이벤트(unix_time)로 환산(unix = offset + ds/10), 4일간 편차 <1분.
 - **Ring 5 본딩 슬롯(2026-09-08 실측)**: 링은 아이폰 외에 **맥 1대**의 BLE 본딩만 받는 것으로 보임.
   다른 맥(예: 개발용 맥북)이 먼저 본딩돼 있으면 새 맥은 스캔은 되지만 연결 직후 링이 끊음
   (`timed out connecting to the ring`, macOS 페어링 팝업 없음). 해결: **먼저 본딩된 맥의

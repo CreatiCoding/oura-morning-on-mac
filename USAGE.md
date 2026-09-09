@@ -81,15 +81,22 @@ IMESSAGE_REPEAT=1 bash scripts/alarm.sh "테스트"   # 알람만
 Oura의 공식 히프노그램(내 데이터)을 정답으로 내 원시신호에 맞춰 분류기를 학습한다.
 독점 모델/키는 안 건드리며, 학습 목표가 Oura 출력이라 잘 되면 근접해진다.
 
+**자동**: `.env`에 `OURA_API_TOKEN`이 있으면 `tonight.sh`가 시작할 때 최근 14일 라벨을 받고
+(`logs/labels.out`) 바로 재학습한다(`logs/train.out`). 검증에서 휴리스틱보다 나을 때만
+`models/sleep_clf.pkl`을 저장하고, 그 뒤 폴링부터 자동 사용된다.
+
 ```bash
-pip install scikit-learn
-# 1) 정답 라벨 수집 — 둘 중 하나
-python3 scripts/collect_labels.py <assa.sqlite>          # (백업에서) 무겁지만 오프라인
-OURA_API_TOKEN=xxx python3 scripts/fetch_labels_api.py    # (공식 API·권장) 경량, 하루 1콜
-# 2) 며칠~2주 모은 뒤 학습
-python3 scripts/train_model.py                            # models/sleep_clf.pkl
-# 3) 이후 sleep_estimate 가 모델을 자동 사용 (없으면 휴리스틱)
+# 토큰 발급(1회): cloud.ouraring.com 에 OAuth 앱 만들고 client_id/secret 을 .env 에 → 브라우저 승인
+python3 scripts/oura_oauth.py
+# 수동으로 돌릴 때
+.venv/bin/python scripts/fetch_labels_api.py 2026-09-01 2026-09-09   # 라벨 → data/training/
+.venv/bin/python scripts/train_model.py                              # 검증 리포트 + 모델 저장
+.venv/bin/python scripts/train_model.py --no-save                    # 리포트만
 ```
+- 정렬: 링 `time_sync` 이벤트로 링 시계↔실제 시각을 환산해(오차 <1분) 공식 5분 히프노그램과
+  에폭 단위로 절대시각 정렬. 신호는 5분 HRV 요약이 아니라 밤새 연속 기록되는 **IBI(박동 간격)·
+  움직임·체온 원본**에서 뽑는다(아티팩트 제거 후 RMSSD 는 링 자체값과 근접).
+- 리포트: "밤 하나 빼기" 검증으로 밤마다 휴리스틱 vs 모델의 에폭 일치율과 REM/깊은/깬 총분 오차를
+  출력한다(`models/train_report.json`). 5밤 기준 실측: 일치율 50% → 66%, 총분 오차는 아직 ±40분대.
 - 라벨/모델은 내 데이터 → `data/`·`models/` gitignore.
-- 라벨 소스: assa.sqlite(백업, 무겁다) 또는 공식 Oura API로 내 히프노그램만 받기(경량, OAuth 앱 필요).
 - 밤이 쌓일수록 정확해진다. 현재 휴리스틱(B)은 총·얕은수면·깬시간은 근접하나 REM↔깊은수면 구분이 약함 → 이 모델이 보완.

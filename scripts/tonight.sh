@@ -23,11 +23,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# 0) #2 학습용 라벨 자동 수집 (토큰 있으면, 최근 14일, best-effort 백그라운드)
+# 0) #2 학습용 라벨 자동 수집 + 개인화 모델 재학습 (토큰 있으면, best-effort 백그라운드)
+#    라벨: 공식 API 최근 14일 → data/training/. 학습: 밤 하나 빼기 검증 후 휴리스틱보다 나을 때만
+#    models/sleep_clf.pkl 저장(그 뒤 폴링부터 자동 사용). 결과는 logs/labels.out, logs/train.out.
 if [ -n "${OURA_API_TOKEN:-}" ]; then
   ( "$PY" scripts/fetch_labels_api.py \
       "$(python3 -c 'from datetime import date,timedelta;print(date.today()-timedelta(days=14))')" \
-      "$(date +%F)" >logs/labels.out 2>&1 ) &
+      "$(date +%F)" >logs/labels.out 2>&1
+    "$PY" scripts/train_model.py >logs/train.out 2>&1 ) &
 fi
 
 # 1) 웹서버 백그라운드 실행 (같은 와이파이에서 폰으로 상태 확인)
