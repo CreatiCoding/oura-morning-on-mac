@@ -18,7 +18,8 @@ import sys
 import statistics as st
 from pathlib import Path
 
-DB = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).resolve().parent.parent / "data" / "oura.db")
+_pos = [a for a in sys.argv[1:] if not a.startswith("--")]
+DB = _pos[0] if _pos else str(Path(__file__).resolve().parent.parent / "data" / "oura.db")
 EPOCH_MIN = 5  # hrv_event 샘플 간격(분)
 
 
@@ -622,7 +623,35 @@ def estimate_and_store(db):
     return out
 
 
+def backfill(db, verbose=True):
+    """DB 에 원본이 남아 있는 모든 밤을 현재 모델/휴리스틱으로 추정해 wr_ 테이블(source=local)에 저장.
+    밤마다 폴링이 저장하는 건 '최근 수면창'뿐이라, 지난 밤과 모델 갱신 뒤 재추정은 이걸로 한다.
+    사용: python3 scripts/sleep_estimate.py --backfill"""
+    n = 0
+    for s_ds, e_ds in night_windows(db):
+        epochs = build_epochs(db, s_ds, e_ds)
+        if sum(1 for e in epochs if e["n_beats"] > 0) < 12:
+            continue
+        stages, method = classify_with_method(epochs)
+        if not stages:
+            continue
+        key = store_local_night(db, s_ds, e_ds, epochs, stages, method)
+        if key is None:
+            continue
+        n += 1
+        if verbose:
+            from datetime import datetime as _dt
+            m = summarize(stages)
+            print(f"[✓] {_dt.fromtimestamp(key).strftime('%m-%d %H:%M')} {method:9s} "
+                  f"총 {m['total_sleep_hours']}h REM {m['rem_min']} 깊은 {m['deep_min']} 깬 {m['awake_min']}분")
+    if verbose:
+        print(f"{n}밤 로컬 추정 저장/갱신 → wr_sleep_nights(source=local)")
+    return n
+
+
 def main():
+    if "--backfill" in sys.argv:
+        backfill(DB); return
     epochs = load_epochs(DB)
     stages = classify(epochs)
     if not stages:

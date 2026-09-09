@@ -30,7 +30,8 @@ if [ -n "${OURA_API_TOKEN:-}" ]; then
   ( "$PY" scripts/fetch_labels_api.py \
       "$(python3 -c 'from datetime import date,timedelta;print(date.today()-timedelta(days=14))')" \
       "$(date +%F)" >logs/labels.out 2>&1
-    "$PY" scripts/train_model.py >logs/train.out 2>&1 ) &
+    "$PY" scripts/train_model.py >logs/train.out 2>&1
+    "$PY" scripts/sleep_estimate.py --backfill >>logs/train.out 2>&1 ) &   # 지난 밤들도 최신 모델로 재추정
 fi
 
 # 1) 웹서버 백그라운드 실행 (같은 와이파이에서 폰으로 상태 확인)
