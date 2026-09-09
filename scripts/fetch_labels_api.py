@@ -18,7 +18,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "training"
-TOKEN = os.environ.get("OURA_API_TOKEN", "")
+DB = ROOT / "data" / "oura.db"
+
+
+def _token():
+    t = os.environ.get("OURA_API_TOKEN", "")
+    if t:
+        return t
+    env = ROOT / ".env"          # 웹서버(launchd) 등 .env 를 안 거친 호출 대비
+    if env.exists():
+        for line in env.read_text().splitlines():
+            if line.startswith("OURA_API_TOKEN="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
+TOKEN = _token()
 API = "https://api.ouraring.com/v2/usercollection/sleep"
 # Oura API sleep_phase_5_min 인코딩: 1=deep, 2=light, 3=rem, 4=awake
 PHASE = {"1": "DEEP", "2": "LIGHT", "3": "REM", "4": "WAKE"}
@@ -37,6 +52,20 @@ def main():
     except Exception as e:
         print(f"API 호출 실패: {e}"); sys.exit(1)
 
+    # 1) 클라우드 정규화 데이터 → 로컬 DB(wr_sleep_nights/epochs, source='cloud'). 낮잠 포함 전부.
+    stored = 0
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("se", ROOT / "scripts" / "sleep_estimate.py")
+        se = importlib.util.module_from_spec(spec); spec.loader.exec_module(se)
+        for s in data.get("data", []):
+            if se.store_cloud_night(str(DB), s) is not None:
+                stored += 1
+        print(f"[✓] 클라우드 수면 기록 {stored}건 → {DB} (wr_sleep_nights, source=cloud)")
+    except Exception as e:
+        print(f"DB 저장 실패(라벨 파일은 계속): {e}")
+
+    # 2) 학습 라벨 파일 (본수면만)
     OUT.mkdir(parents=True, exist_ok=True)
     saved = 0
     for s in data.get("data", []):

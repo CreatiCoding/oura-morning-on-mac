@@ -347,10 +347,19 @@ def classify_model(epochs):
 
 
 def classify(epochs):
-    # 개인화 모델 우선, 없으면 휴리스틱
+    return classify_with_method(epochs)[0]
+
+
+def classify_with_method(epochs):
+    """(stages, method). method: 'model'(개인화 모델) | 'heuristic'. 실패 시 (None, None)."""
     m = classify_model(epochs)
     if m is not None:
-        return m
+        return m, "model"
+    h = _classify_heuristic(epochs)
+    return (h, "heuristic") if h else (None, None)
+
+
+def _classify_heuristic(epochs):
     valid_hr = [e["hr"] for e in epochs if e["hr"] > 0]
     valid_rm = [e["rmssd"] for e in epochs if e["rmssd"] > 0]
     if len(valid_hr) < 5:
@@ -412,6 +421,175 @@ def summarize(stages):
         "light_min": mins["LIGHT"], "awake_min": mins["WAKE"],
         "rem_pct": pct["REM"], "deep_pct": pct["DEEP"], "light_pct": pct["LIGHT"],
     }
+
+
+# ── 정규화 데이터 저장소 (같은 oura.db 안, wr_ 접두) ─────────────────────────
+# events        : 링 원본(raw)                                  ← open_oura 가 씀
+# wr_sleep_nights/wr_sleep_epochs : 정규화된 밤/5분 에폭. source='local'(맥 추정) | 'cloud'(Oura 공식)
+STAGE_DIGIT = {"DEEP": "1", "LIGHT": "2", "REM": "3", "WAKE": "4"}   # Oura API sleep_phase_5_min 과 동일
+DIGIT_STAGE = {v: k for k, v in STAGE_DIGIT.items()}
+EPOCH_COLS = ["hr", "rmssd", "sdnn", "ibi_cv", "ibi_bad", "motion", "motion_max",
+              "motion_frac", "motion_sec", "temp"]
+
+
+def _connect(db):
+    con = sqlite3.connect(db, timeout=10)   # oura sync 가 쓰는 중이면 최대 10초 대기
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS wr_sleep_nights (
+      source TEXT NOT NULL, night_start_unix INTEGER NOT NULL, night_end_unix INTEGER,
+      day TEXT, method TEXT,
+      total_sleep_sec INTEGER, rem_sec INTEGER, deep_sec INTEGER, light_sec INTEGER, awake_sec INTEGER,
+      efficiency REAL, hypnogram TEXT, raw_json TEXT, updated_unix INTEGER NOT NULL,
+      PRIMARY KEY (source, night_start_unix));
+    CREATE TABLE IF NOT EXISTS wr_sleep_epochs (
+      source TEXT NOT NULL, night_start_unix INTEGER NOT NULL, epoch_idx INTEGER NOT NULL,
+      ts_unix INTEGER, stage TEXT,
+      hr REAL, rmssd REAL, sdnn REAL, ibi_cv REAL, ibi_bad REAL,
+      motion REAL, motion_max REAL, motion_frac REAL, motion_sec REAL, temp REAL,
+      PRIMARY KEY (source, night_start_unix, epoch_idx));
+    """)
+    return con
+
+
+def _night_key(con, source, start_unix, tol_sec=900):
+    """같은 밤인데 시작 시각이 몇 초~몇 분 흔들려도(bedtime_period 재계산) 한 행으로 모은다."""
+    row = con.execute(
+        "SELECT night_start_unix FROM wr_sleep_nights WHERE source=? AND ABS(night_start_unix-?)<=? "
+        "ORDER BY ABS(night_start_unix-?) LIMIT 1", (source, start_unix, tol_sec, start_unix)).fetchone()
+    return int(row[0]) if row else int(start_unix)
+
+
+def _upsert_night(con, source, key, end_unix, day, method, mins, eff, hyp, raw, epochs_rows):
+    import time as _t
+    con.execute(
+        "INSERT OR REPLACE INTO wr_sleep_nights VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (source, key, end_unix, day, method,
+         (mins["REM"] + mins["DEEP"] + mins["LIGHT"]) * 60, mins["REM"] * 60, mins["DEEP"] * 60,
+         mins["LIGHT"] * 60, mins["WAKE"] * 60, eff, hyp, raw, int(_t.time())))
+    con.execute("DELETE FROM wr_sleep_epochs WHERE source=? AND night_start_unix=?", (source, key))
+    con.executemany(
+        "INSERT INTO wr_sleep_epochs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(source, key, i, r.get("ts_unix"), r.get("stage")) + tuple(r.get(c) for c in EPOCH_COLS)
+         for i, r in enumerate(epochs_rows)])
+    con.commit()
+
+
+def store_local_night(db, start_ds, end_ds, epochs, stages, method):
+    """맥이 추정한 오늘 밤(정규화 에폭 + 단계)을 저장. 링 시계 환산 불가(time_sync 없음)면 None."""
+    off = ring_offset(db)
+    if off is None or not epochs or not stages:
+        return None
+    from datetime import datetime as _dt
+    start_unix = int(off + start_ds / 10); end_unix = int(off + end_ds / 10)
+    mins = {k: EPOCH_MIN * stages.count(k) for k in STAGE_DIGIT}
+    asleep = mins["REM"] + mins["DEEP"] + mins["LIGHT"]
+    eff = round(100.0 * asleep / (asleep + mins["WAKE"]), 1) if asleep + mins["WAKE"] else None
+    rows = [dict(e, ts_unix=int(off + e["ts"] / 10), stage=s) for e, s in zip(epochs, stages)]
+    con = _connect(db)
+    try:
+        key = _night_key(con, "local", start_unix)
+        _upsert_night(con, "local", key, end_unix, _dt.fromtimestamp(end_unix).strftime("%Y-%m-%d"),
+                      method, mins, eff, "".join(STAGE_DIGIT[s] for s in stages), None, rows)
+    finally:
+        con.close()
+    return key
+
+
+def store_cloud_night(db, rec):
+    """공식 API sleep 레코드 1건(가공된 정규화 데이터)을 저장. 반환: night key 또는 None."""
+    from datetime import datetime as _dt
+    try:
+        start_unix = int(_dt.fromisoformat(rec["bedtime_start"]).timestamp())
+        end_unix = int(_dt.fromisoformat(rec["bedtime_end"]).timestamp())
+    except Exception:
+        return None
+    hyp = rec.get("sleep_phase_5_min") or ""
+    mins = {k: round((rec.get(f) or 0) / 60) for k, f in
+            (("REM", "rem_sleep_duration"), ("DEEP", "deep_sleep_duration"),
+             ("LIGHT", "light_sleep_duration"), ("WAKE", "awake_time"))}
+    def series(name):
+        s = rec.get(name) or {}
+        return list(s.get("items") or [])
+    hr, hrv = series("heart_rate"), series("hrv")
+    n = max(len(hyp), len(hr), len(hrv))
+    rows = []
+    for i in range(n):
+        rows.append({"ts_unix": start_unix + (i + 1) * 300,
+                     "stage": DIGIT_STAGE.get(hyp[i]) if i < len(hyp) else None,
+                     "hr": hr[i] if i < len(hr) else None, "rmssd": hrv[i] if i < len(hrv) else None})
+    con = _connect(db)
+    try:
+        _upsert_night(con, "cloud", start_unix, end_unix, rec.get("day"), "oura_api", mins,
+                      rec.get("efficiency"), hyp, json.dumps(rec, ensure_ascii=False), rows)
+    finally:
+        con.close()
+    return start_unix
+
+
+def _night_row_to_summary(row):
+    (source, start, end, day, method, tot, rem, deep, light, awake, eff, hyp) = row
+    asleep = (rem + deep + light) or 0
+    pct = lambda x: round(100 * x / asleep, 1) if asleep else 0
+    from datetime import datetime as _dt
+    return {"total_sleep_hours": round(asleep / 3600, 2),
+            "rem_min": rem // 60, "deep_min": deep // 60, "light_min": light // 60, "awake_min": awake // 60,
+            "rem_pct": pct(rem), "deep_pct": pct(deep), "light_pct": pct(light),
+            "source": source, "method": method, "day": day, "efficiency": eff,
+            "bedtime_start": _dt.fromtimestamp(start).isoformat(timespec="minutes"),
+            "bedtime_end": _dt.fromtimestamp(end).isoformat(timespec="minutes") if end else None,
+            "hypnogram": hyp}
+
+
+def cloud_night_for(db, start_unix=None, end_unix=None, max_age_hours=24, min_hours=1.0):
+    """표시용 클라우드 공식 기록. (start,end) 주면 그 창과 겹치는 밤, 없으면 max_age 안의 최근 밤."""
+    import time as _t
+    try:
+        con = _connect(db)
+        q = ("SELECT source,night_start_unix,night_end_unix,day,method,total_sleep_sec,rem_sec,deep_sec,"
+             "light_sec,awake_sec,efficiency,hypnogram FROM wr_sleep_nights WHERE source='cloud' "
+             "AND total_sleep_sec>=? ")
+        args = [min_hours * 3600]
+        if start_unix is not None and end_unix is not None:
+            q += "AND night_start_unix<=? AND night_end_unix>=? "; args += [end_unix, start_unix]
+        else:
+            q += "AND night_end_unix>=? "; args += [_t.time() - max_age_hours * 3600]
+        row = con.execute(q + "ORDER BY night_end_unix DESC LIMIT 1", args).fetchone()
+        con.close()
+    except Exception:
+        return None
+    return _night_row_to_summary(row) if row else None
+
+
+def local_night_latest(db):
+    try:
+        con = _connect(db)
+        row = con.execute(
+            "SELECT source,night_start_unix,night_end_unix,day,method,total_sleep_sec,rem_sec,deep_sec,"
+            "light_sec,awake_sec,efficiency,hypnogram FROM wr_sleep_nights WHERE source='local' "
+            "ORDER BY night_end_unix DESC LIMIT 1").fetchone()
+        con.close()
+    except Exception:
+        return None
+    return _night_row_to_summary(row) if row else None
+
+
+def estimate_and_store(db):
+    """오늘 밤 수면창 추정 → summarize 결과(+source/method) 반환하고 wr_ 테이블에도 저장.
+    wakeready/web 이 쓰는 단일 진입점. 실패 시 None."""
+    win = bedtime_window(db)
+    if not win:
+        return None
+    epochs = load_epochs(db, *win)
+    stages, method = classify_with_method(epochs)
+    if not stages:
+        return None
+    out = summarize(stages)
+    out.update({"source": "local", "method": method})
+    try:
+        store_local_night(db, win[0], win[1], epochs, stages, method)
+    except Exception:
+        pass   # 저장 실패해도 추정값은 돌려준다(oura sync 와 잠금 경합 등)
+    return out
 
 
 def main():

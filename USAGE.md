@@ -99,4 +99,22 @@ python3 scripts/oura_oauth.py
 - 리포트: "밤 하나 빼기" 검증으로 밤마다 휴리스틱 vs 모델의 에폭 일치율과 REM/깊은/깬 총분 오차를
   출력한다(`models/train_report.json`). 5밤 기준 실측: 일치율 50% → 66%, 총분 오차는 아직 ±40분대.
 - 라벨/모델은 내 데이터 → `data/`·`models/` gitignore.
+
+### 데이터 3계층과 웹 표시 출처
+`data/oura.db` 하나에 셋이 같이 있다.
+
+| 계층 | 테이블 | 쓰는 쪽 | 내용 |
+|---|---|---|---|
+| 원본(raw) | `events` | `oura sync` | IBI·가속도·체온 등 링 이벤트, 링 시계 기준 |
+| 로컬 정규화 | `wr_sleep_nights` / `wr_sleep_epochs` (`source='local'`) | 매 폴링·웹 | 5분 에폭 피처 + 추정 단계, `method`=model/heuristic |
+| 클라우드 정규화 | 같은 테이블 (`source='cloud'`) | `fetch_labels_api.py` | 공식 단계·5분 HR/HRV·효율, 원본 JSON 보관 |
+
+웹 UI 는 **그 밤의 클라우드 기록이 있으면 클라우드(☁️ 배지)**, 없으면 **로컬 추정(💍 배지, 모델/휴리스틱 표기)** 을
+보여주고, 클라우드일 땐 로컬 추정값을 작게 같이 보여 준다(모델이 얼마나 맞는지 매일 확인용).
+밤중엔 클라우드에 오늘 밤 기록이 없으니 자연히 로컬이 보이고, 아침에 아이폰 앱이 동기화하면 클라우드로 바뀐다.
+알람 판정은 표시와 무관하게 항상 로컬 추정으로 한다.
+
+```bash
+sqlite3 data/oura.db "select source,day,method,rem_sec/60,deep_sec/60,awake_sec/60 from wr_sleep_nights order by night_start_unix"
+```
 - 밤이 쌓일수록 정확해진다. 현재 휴리스틱(B)은 총·얕은수면·깬시간은 근접하나 REM↔깊은수면 구분이 약함 → 이 모델이 보완.

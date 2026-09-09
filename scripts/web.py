@@ -78,23 +78,99 @@ def _db_snapshot():
     _DBCACHE.update(t=now, data=data)
     return data
 
+_SE = None
+def _se():
+    global _SE
+    if _SE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("se_web", ROOT / "scripts" / "sleep_estimate.py")
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        _SE = m
+    return _SE
+
+
+# 클라우드(공식 API) 기록 갱신: 페이지를 보는 동안 최대 30분에 1번, fetch_labels_api.py 를 백그라운드로.
+# 토큰이 없으면(.env 에 OURA_API_TOKEN) 아무것도 안 함. 실패해도 UI 는 로컬 추정으로 계속.
+CLOUD_REFRESH_SEC = int(os.environ.get("CLOUD_REFRESH_SEC", "1800"))
+_CLOUD = {"t": 0.0, "proc": None}
+
+def _has_token():
+    if os.environ.get("OURA_API_TOKEN"):
+        return True
+    try:
+        return any(l.startswith("OURA_API_TOKEN=") and len(l) > 16
+                   for l in (ROOT / ".env").read_text().splitlines())
+    except Exception:
+        return False
+
+def _maybe_refresh_cloud():
+    now = _time.time()
+    if now - _CLOUD["t"] < CLOUD_REFRESH_SEC or not _has_token():
+        return
+    if _CLOUD["proc"] is not None and _CLOUD["proc"].poll() is None:
+        return
+    _CLOUD["t"] = now
+    try:
+        import sys
+        from datetime import date, timedelta
+        LOGD.mkdir(parents=True, exist_ok=True)
+        out = open(LOGD / "labels.out", "a")
+        _CLOUD["proc"] = subprocess.Popen(
+            [sys.executable, str(ROOT / "scripts" / "fetch_labels_api.py"),
+             str(date.today() - timedelta(days=3)), str(date.today())],
+            stdout=out, stderr=subprocess.STDOUT, cwd=str(ROOT))
+    except Exception:
+        pass
+
+
+def _current_night_unix():
+    """로컬 DB 의 최신 수면창을 unix 로. (start, end) 또는 None."""
+    try:
+        se = _se(); win = se.bedtime_window(str(DB)); off = se.ring_offset(str(DB))
+        if win and off is not None:
+            return int(off + win[0] / 10), int(off + win[1] / 10)
+    except Exception:
+        pass
+    return None
+
+
 def status_payload():
-    """status.json 을 읽되, hours/estimate 가 비어 있으면 DB 추정으로 채워 돌려준다."""
+    """status.json(세션 상태) + 표시 데이터 선택.
+    표시 우선순위: ① 이 밤의 클라우드 공식 기록(있으면)  ② 로컬 추정(모델/휴리스틱).
+    응답에 source('cloud'|'local'), method, source_label 을 넣어 UI 가 출처를 표기한다.
+    판정(알람)은 항상 로컬 기준이며 여기서 바뀌지 않는다 — 표시만 고른다."""
     try:
         d = json.loads(STATUS.read_text())
     except Exception:
         d = {}
+    _maybe_refresh_cloud()
+    # ② 로컬 추정으로 빈 칸 채우기 (세션이 안 돌 때)
     if d.get("estimate") is None or d.get("hours") is None:
         snap = _db_snapshot()
         if d.get("estimate") is None and snap["estimate"] is not None:
             d["estimate"] = snap["estimate"]
-            d["from_db"] = True   # UI 참고용: 라이브 폴링이 아니라 DB 추정으로 채운 값
+            d["from_db"] = True   # 라이브 폴링이 아니라 DB 추정으로 채운 값
         if d.get("hours") is None and snap["hours"] is not None:
             d["hours"] = snap["hours"]
         d.setdefault("target_hours", 8.0)
         d.setdefault("mode", "total")
         if not d.get("status"):
             d["status"] = "참고: 마지막 동기화 기준 추정 (세션 대기 중)"
+    est = d.get("estimate") or {}
+    d["source"] = "local"; d["method"] = est.get("method")
+    d["source_label"] = "💍 로컬 추정 · " + ("개인화 모델" if est.get("method") == "model" else "휴리스틱")
+    # ① 이 밤에 해당하는 클라우드 공식 기록이 있으면 그걸 표시
+    try:
+        win = _current_night_unix()
+        cloud = _se().cloud_night_for(str(DB), *(win or (None, None)))
+        if cloud:
+            d["local_estimate"] = d.get("estimate")      # 비교용으로 로컬 값도 같이 보냄
+            d["estimate"] = cloud
+            d["hours"] = cloud["total_sleep_hours"]
+            d["source"] = "cloud"; d["method"] = "oura_api"
+            d["source_label"] = f"☁️ Oura 공식 기록 · {cloud['day']} ({cloud['bedtime_start'][11:16]}→{(cloud['bedtime_end'] or '')[11:16]})"
+    except Exception:
+        pass
     return json.dumps(d, ensure_ascii=False)
 PORT = int(os.environ.get("PORT", os.environ.get("WEB_PORT", "8777")))
 
@@ -129,6 +205,8 @@ body{margin:0;font:16px -apple-system,system-ui,sans-serif;background:#0e1116;co
 .btn:active{background:#2ea043}.btn:disabled{background:#30363d;color:#7d8590}
 .foot{margin-top:14px;color:#7d8590;font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px}
 .off{color:#f85149}.ok{color:#3fb950}
+.src{margin-top:12px;font-size:12px;color:#adbac7;background:#21262d;border-radius:8px;padding:7px 10px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.src.cloud{background:#12261b;color:#7ee2a8}.src small{color:#7d8590}
 </style></head><body>
 <div class="card">
   <div class="hd"><b>💤 WakeReady</b><span class="tag" id="mode">—</span></div>
@@ -146,6 +224,7 @@ body{margin:0;font:16px -apple-system,system-ui,sans-serif;background:#0e1116;co
     <div class="stat"><div class="k">깬 시간</div><div class="v" id="awake_v">–</div>
       <div class="t">&nbsp;</div><div class="mini"><i style="width:0%"></i></div></div>
   </div>
+  <div class="src" id="src">출처 확인 중…</div>
   <div class="status" id="status">연결 대기 중…</div>
   <button class="btn" id="sync" onclick="doSync()">🔄 지금 동기화</button>
   <div class="foot"><span id="meta"></span><span id="upd"></span></div>
@@ -183,6 +262,12 @@ async function tick(){
       bar('rem_bar', healthy?e.rem_min/remT:e.rem_pct/25);
       bar('deep_bar', healthy?e.deep_min/deepT:e.deep_pct/20);
     }  // estimate 없어도 이전 값 유지(지우지 않음)
+    const src=document.getElementById('src');
+    if(src){ src.className='src'+(d.source==='cloud'?' cloud':'');
+      let cmp='';
+      if(d.source==='cloud'&&d.local_estimate){const l=d.local_estimate;
+        cmp='<small>로컬 추정: REM '+l.rem_min+' · 깊은 '+l.deep_min+' · 깬 '+l.awake_min+'분 ('+(l.method==='model'?'모델':'휴리스틱')+')</small>';}
+      src.innerHTML='<span>'+(d.source_label||'')+'</span>'+cmp; }
     const stale=(d.status||'').indexOf('지난')>=0;
     let s=(stale?'⏸️ ':'')+(d.status||'…');
     if(d.phase==='syncing'){ s+=' <span class="ok">(동기화 중…)</span>';

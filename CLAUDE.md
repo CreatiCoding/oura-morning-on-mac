@@ -13,7 +13,7 @@
 ## 아키텍처 / 코드 지도
 ```
 링(착용) ─BLE(읽기전용)→ 맥[open_oura] → SQLite(data/oura.db)
-   → sleep_estimate.py(REM/깊은수면 추정) → wakeready.py(판정)
+   → sleep_estimate.py(REM/깊은수면 추정, wr_sleep_* 에 정규화 저장) → wakeready.py(판정)
    → alarm.sh → iMessage "WAKEREADY" → 아이폰 단축어(노래 재생) → ntfy ACK
    웹: wakeready→status.json→web.py(:8777)→폰 브라우저(QR)
 ```
@@ -25,6 +25,11 @@
 - `scripts/web.py` — stdlib 웹서버. status.json 표시 + "지금 동기화" 버튼(→sync_request 플래그).
 - `scripts/_qr.py` — 접속 QR(터미널). `scripts/setup.sh` — open_oura 빌드.
 - `.env`(gitignore) — 모든 설정/비밀. `.env.example` 참고.
+- **DB 3계층**(모두 `data/oura.db`): `events` = 링 원본(raw, open_oura 가 씀) /
+  `wr_sleep_nights`·`wr_sleep_epochs` = 정규화된 밤·5분 에폭, `source='local'`(맥 추정, method=model|heuristic)
+  과 `source='cloud'`(공식 API, `fetch_labels_api.py` 가 저장). 웹 UI 는 그 밤의 cloud 가 있으면 cloud,
+  없으면 local 을 표시하고 출처 배지를 붙인다. **판정(알람)은 항상 local 기준**이며 표시만 고른다.
+  웹서버는 페이지를 보는 동안 30분에 1번 클라우드를 갱신(`CLOUD_REFRESH_SEC`).
 
 ## 세팅 안내 순서 (사용자에게 이 순서로)
 1. **환경**: 침대에서 BLE 닿는 맥(밤새 켬), Oura 링, 아이폰(맥과 같은 와이파이·같은 Apple ID).

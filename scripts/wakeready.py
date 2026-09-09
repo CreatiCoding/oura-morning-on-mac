@@ -205,9 +205,7 @@ def estimate_stages():
         spec = importlib.util.spec_from_file_location("sleep_estimate", p)
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
-        epochs = m.load_epochs(DB)
-        stages = m.classify(epochs)
-        return m.summarize(stages) if stages else None
+        return m.estimate_and_store(DB)   # 추정 + wr_sleep_* 저장 (source=local, method=model|heuristic)
     except Exception as e:
         log("수면단계 추정 실패", error=str(e))
         return None
