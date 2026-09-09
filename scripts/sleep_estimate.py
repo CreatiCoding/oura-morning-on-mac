@@ -140,6 +140,7 @@ def build_epochs(db, start_ds, end_ds, epoch_min=EPOCH_MIN):
     if n <= 0:
         return []
     ibi = [[] for _ in range(n)]
+    amp = [[] for _ in range(n)]
     mad = [[] for _ in range(n)]
     msec = [0.0] * n
     temp = [[] for _ in range(n)]
@@ -151,6 +152,7 @@ def build_epochs(db, start_ds, end_ds, epoch_min=EPOCH_MIN):
         if i is not None:
             # 이벤트(연속 6박동) 단위로 보관: 인접차이는 같은 이벤트 안에서만 계산(이벤트 사이는 박동 누락)
             ibi[i].append([x for x in v.get("ibi_ms", []) if 300 <= x <= 2000])
+            amp[i].extend(a for a in v.get("amplitude", []) if a > 0)
     for ts, v in _rows(db, "sleep_acm_period", start_ds, end_ds):
         i = idx(ts)
         if i is not None:
@@ -177,10 +179,14 @@ def build_epochs(db, start_ds, end_ds, epoch_min=EPOCH_MIN):
             hr = rmssd = sdnn = cv = 0.0
             b = raw
         m = mad[i]
+        a = amp[i]
+        amp_m = (sum(a) / len(a)) if a else 0.0
+        amp_cv = (st.pstdev(a) / amp_m) if (len(a) > 1 and amp_m) else 0.0
         epochs.append({
             "ts": start_ds + i * step + step,   # 에폭 끝 시각(기존 hrv_event ts 관례와 동일)
             "hr": round(hr, 1), "rmssd": round(rmssd, 1), "sdnn": round(sdnn, 1),
             "ibi_cv": round(cv, 4), "n_beats": len(b), "ibi_bad": round(bad, 3),
+            "amp": round(amp_m, 1), "amp_cv": round(amp_cv, 4),
             "motion": (sum(m) / len(m)) if m else 0.0,
             "motion_max": max(m) if m else 0.0,
             "motion_frac": (sum(1 for x in m if x > 1.0) / len(m)) if m else 0.0,
@@ -282,48 +288,63 @@ def _smooth(stages, min_run=2):
 
 MODEL_PKL = Path(__file__).resolve().parent.parent / "models" / "sleep_clf.pkl"
 # 학습/추론 공용 피처. 순서 바꾸면 기존 models/sleep_clf.pkl 과 안 맞으니 재학습 필요.
-FEATURES = ["hr", "rmssd", "sdnn", "ibi_cv", "ibi_bad", "motion", "motion_max", "motion_frac", "motion_sec",
-            "temp_dev", "frac", "hr_z", "rm_z", "hr_lv", "hr_ctx", "rm_ctx", "mo_ctx", "has_data"]
+# ⚠️ 전부 '과거 창'만 쓰는 인과 피처다. 밤 전체 통계(예: 밤 안의 상대위치 frac, 밤 전체 z-점수)는
+#    학습 땐 밤 전체, 실시간 땐 '지금까지'가 기준이 되어 학습·추론이 어긋나므로 쓰지 않는다.
+FEATURES = ["hr", "rmssd", "sdnn", "ibi_cv", "ibi_bad", "amp", "amp_cv",
+            "motion", "motion_max", "motion_frac", "motion_sec", "temp_dev",
+            "mins", "hr_z", "rm_z", "hr_lv", "hr_ctx6", "hr_ctx12", "rm_ctx6", "mo_ctx6", "mo_ctx12",
+            "hr_rel_min", "hr_delta", "since_move", "has_data"]
 
 
-def _ctx(vals, i, w):
-    seg = [v for v in vals[max(0, i - w):i + w + 1] if v > 0]
+def _past_mean(vals, i, w):
+    seg = [v for v in vals[max(0, i - w + 1):i + 1] if v > 0]
     return st.mean(seg) if seg else 0.0
 
 
 def epoch_features(epochs):
-    """에폭 → 피처 dict 리스트 (학습/추론 공용).
-
-    밤 안에서의 z-점수(hr_z, rm_z)와 ±3에폭 문맥 평균(*_ctx), 단기 HR 변동(hr_lv)을 포함해
-    개인·날짜별 절대값 차이에 덜 흔들리게 한다. has_data=0 이면 그 에폭은 결측(링 미측정)."""
-    hrs = [e["hr"] for e in epochs if e["hr"] > 0]
-    rms = [e["rmssd"] for e in epochs if e["rmssd"] > 0]
-    tps = [e.get("temp", 0) for e in epochs if e.get("temp", 0) > 0]
-    hr_m = st.mean(hrs) if hrs else 0
-    hr_sd = (st.pstdev(hrs) or 1) if len(hrs) > 1 else 1
-    rm_m = st.mean(rms) if rms else 0
-    rm_sd = (st.pstdev(rms) or 1) if len(rms) > 1 else 1
-    tp_med = st.median(tps) if tps else 0
+    """에폭 → 피처 dict 리스트 (학습/추론 공용, 인과)."""
     n = len(epochs)
-    hr_series = [e["hr"] for e in epochs]
-    rm_series = [e["rmssd"] for e in epochs]
-    mo_series = [e.get("motion", 0) for e in epochs]
+    hr_s = [e["hr"] for e in epochs]
+    rm_s = [e["rmssd"] for e in epochs]
+    mo_s = [e.get("motion", 0) for e in epochs]
+    tp_s = [e.get("temp", 0) for e in epochs]
     out = []
+    hr_hist, rm_hist, tp_hist = [], [], []
+    hr_min = None
+    since_move = 24
     for i, e in enumerate(epochs):
-        w = [hr_series[j] for j in range(max(0, i - 2), min(n, i + 3)) if hr_series[j] > 0]
+        hr, rm = e["hr"], e["rmssd"]
+        if hr > 0:
+            hr_hist.append(hr); hr_min = hr if hr_min is None else min(hr_min, hr)
+        if rm > 0:
+            rm_hist.append(rm)
+        if tp_s[i] > 0:
+            tp_hist.append(tp_s[i])
+        moved = e.get("motion_frac", 0) >= 0.2 or e.get("motion_sec", 0) > 0
+        since_move = 0 if moved else min(24, since_move + 1)
+        hr_m = st.mean(hr_hist) if hr_hist else 0
+        hr_sd = st.pstdev(hr_hist) if len(hr_hist) > 2 else 0
+        rm_m = st.mean(rm_hist) if rm_hist else 0
+        rm_sd = st.pstdev(rm_hist) if len(rm_hist) > 2 else 0
+        w = [v for v in hr_s[max(0, i - 4):i + 1] if v > 0]
+        hr_ctx6 = _past_mean(hr_s, i, 6)
         out.append({
-            "hr": e["hr"], "rmssd": e["rmssd"],
-            "sdnn": e.get("sdnn", 0), "ibi_cv": e.get("ibi_cv", 0), "ibi_bad": e.get("ibi_bad", 0),
-            "motion": e.get("motion", 0), "motion_max": e.get("motion_max", 0),
+            "hr": hr, "rmssd": rm, "sdnn": e.get("sdnn", 0), "ibi_cv": e.get("ibi_cv", 0),
+            "ibi_bad": e.get("ibi_bad", 0), "amp": e.get("amp", 0), "amp_cv": e.get("amp_cv", 0),
+            "motion": mo_s[i], "motion_max": e.get("motion_max", 0),
             "motion_frac": e.get("motion_frac", 0), "motion_sec": e.get("motion_sec", 0),
-            "temp_dev": (e.get("temp", 0) - tp_med) if e.get("temp", 0) > 0 else 0,
-            "frac": i / max(1, n - 1),
-            "hr_z": (e["hr"] - hr_m) / hr_sd if e["hr"] > 0 else 0,
-            "rm_z": (e["rmssd"] - rm_m) / rm_sd if e["rmssd"] > 0 else 0,
+            "temp_dev": (tp_s[i] - st.median(tp_hist)) if (tp_s[i] > 0 and tp_hist) else 0,
+            "mins": i * EPOCH_MIN,
+            "hr_z": (hr - hr_m) / hr_sd if (hr > 0 and hr_sd) else 0,
+            "rm_z": (rm - rm_m) / rm_sd if (rm > 0 and rm_sd) else 0,
             "hr_lv": st.pstdev(w) if len(w) >= 2 else 0,
-            "hr_ctx": _ctx(hr_series, i, 3), "rm_ctx": _ctx(rm_series, i, 3),
-            "mo_ctx": _ctx(mo_series, i, 3),
-            "has_data": 1 if e["hr"] > 0 else 0,
+            "hr_ctx6": hr_ctx6, "hr_ctx12": _past_mean(hr_s, i, 12),
+            "rm_ctx6": _past_mean(rm_s, i, 6),
+            "mo_ctx6": _past_mean(mo_s, i, 6), "mo_ctx12": _past_mean(mo_s, i, 12),
+            "hr_rel_min": (hr / hr_min) if (hr > 0 and hr_min) else 0,
+            "hr_delta": (hr - hr_ctx6) if (hr > 0 and hr_ctx6) else 0,
+            "since_move": since_move,
+            "has_data": 1 if hr > 0 else 0,
         })
     return out
 
@@ -339,12 +360,41 @@ def classify_model(epochs):
         clf, feats = bundle["clf"], bundle["features"]
         rows = epoch_features(epochs)
         X = [[r[k] for k in feats] for r in rows]
-        pred = [str(x) for x in clf.predict(X)]
+        if bundle.get("trans") is not None:
+            pred = viterbi(clf.predict_proba(X), [str(c) for c in clf.classes_], bundle["trans"],
+                           bundle.get("self_bias", 0.0))
+        else:
+            pred = [str(x) for x in clf.predict(X)]
         # 결측 에폭(링 미측정)은 휴리스틱과 같이 WAKE 로 — 모델이 '없음=수면'을 배우지 않게 학습에서도 제외됨
         pred = [("WAKE" if r["has_data"] == 0 else s) for r, s in zip(rows, pred)]
         return _smooth(pred)
     except Exception:
         return None
+
+
+def viterbi(proba, classes, trans, self_bias=0.0):
+    """에폭별 클래스 확률(분류기 출력)을 관측으로, 라벨에서 배운 단계 전이확률(trans[a][b], 확률)을
+    사전분포로 써서 가장 그럴듯한 단계 시퀀스를 복호. 단계는 연속적이라(수십 분 단위 유지)
+    에폭별 독립 예측보다 튀는 오분류가 줄어든다. 실시간에도 '지금까지' 시퀀스에 그대로 적용."""
+    import math
+    n, k = len(proba), len(classes)
+    if n == 0:
+        return []
+    lt = [[math.log(max(1e-6, trans[a][b])) + (self_bias if a == b else 0.0) for b in range(k)] for a in range(k)]
+    le = [[math.log(max(1e-6, p)) for p in row] for row in proba]
+    score = [le[0][:]]
+    back = [[0] * k]
+    for t in range(1, n):
+        prev = score[-1]; cur = []; bk = []
+        for b in range(k):
+            best_a = max(range(k), key=lambda a: prev[a] + lt[a][b])
+            cur.append(prev[best_a] + lt[best_a][b] + le[t][b]); bk.append(best_a)
+        score.append(cur); back.append(bk)
+    j = max(range(k), key=lambda b: score[-1][b])
+    path = [j]
+    for t in range(n - 1, 0, -1):
+        j = back[t][j]; path.append(j)
+    return [classes[i] for i in reversed(path)]
 
 
 def classify(epochs):

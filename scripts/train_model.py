@@ -83,24 +83,48 @@ def night_dataset(se, db, offset, lab):
     return feats[:n], lab["stages"][:n], epochs[:n]
 
 
+# 2026-09-09 5밤 LOO 비교로 고른 설정: 얕은 트리(depth2)·느린 학습(300회, lr .03)·균형 가중치
+# + 비터비(self_bias 0.5). 에폭 일치율 66→72%, REM/깊은 총분 절대오차 46/39 → 28/26분.
+SELF_BIAS = 0.5
+
+
 def make_clf():
     from sklearn.ensemble import HistGradientBoostingClassifier
-    # 데이터가 적으니(밤당 ~100 에폭) 얕고 느리게. 클래스 불균형(LIGHT 다수)은 가중치로.
-    return HistGradientBoostingClassifier(max_depth=3, max_iter=120, learning_rate=0.05,
+    return HistGradientBoostingClassifier(max_depth=2, max_iter=300, learning_rate=0.03,
                                           min_samples_leaf=8, l2_regularization=1.0,
                                           class_weight="balanced", random_state=0)
 
 
+def transitions(seqs, classes):
+    """라벨 시퀀스에서 단계 전이확률(add-one 평활). classes 순서(=clf.classes_)로 반환."""
+    c = {a: {b: 1.0 for b in classes} for a in classes}
+    for s in seqs:
+        for a, b in zip(s, s[1:]):
+            if a in c and b in c[a]:
+                c[a][b] += 1
+    return [[c[a][b] / sum(c[a].values()) for b in classes] for a in classes]
+
+
 def fit(se, rows):
+    """rows: [(features, stage)] 를 밤 경계 없이 이어 붙인 것. 전이행렬은 별도로 seqs 에서."""
     X = [[r[k] for k in se.FEATURES] for r, _ in rows if r["has_data"]]
     y = [s for r, s in rows if r["has_data"]]
     clf = make_clf(); clf.fit(X, y)
     return clf
 
 
-def predict(se, clf, feats):
+def bundle_of(clf, seqs, se):
+    classes = [str(c) for c in clf.classes_]
+    return {"clf": clf, "features": se.FEATURES, "trans": transitions(seqs, classes),
+            "self_bias": SELF_BIAS}
+
+
+def predict(se, bundle, feats):
+    """sleep_estimate.classify_model 과 같은 경로: 확률 → 비터비 → 결측은 WAKE."""
+    clf = bundle["clf"]
     X = [[r[k] for k in se.FEATURES] for r in feats]
-    pred = [str(p) for p in clf.predict(X)]
+    pred = se.viterbi(clf.predict_proba(X), [str(c) for c in clf.classes_], bundle["trans"],
+                      bundle.get("self_bias", 0.0))
     pred = [("WAKE" if r["has_data"] == 0 else s) for r, s in zip(feats, pred)]
     return se._smooth(pred)
 
@@ -164,9 +188,10 @@ def main():
     for i, n in enumerate(nights):
         train_rows = [(f, s) for j, m in enumerate(nights) if j != i for f, s in zip(m["feats"], m["truth"])]
         clf = fit(se, train_rows)
+        b = bundle_of(clf, [m["truth"] for j, m in enumerate(nights) if j != i], se)
         valid = [k for k, f in enumerate(n["feats"]) if f["has_data"]]
         truth = [n["truth"][k] for k in valid]
-        pm = predict(se, clf, n["feats"]); ph = heuristic(se, n["epochs"])
+        pm = predict(se, b, n["feats"]); ph = heuristic(se, n["epochs"])
         pm_v = [pm[k] for k in valid]; ph_v = [ph[k] for k in valid]
         a_h, a_m = acc(ph_v, truth), acc(pm_v, truth)
         e_h, e_m = err(ph_v, truth), err(pm_v, truth)
@@ -187,6 +212,7 @@ def main():
     # ── 전체 학습 + 저장 ───────────────────────────────────────────────
     all_rows = [(f, s) for n in nights for f, s in zip(n["feats"], n["truth"])]
     clf = fit(se, all_rows)
+    final = bundle_of(clf, [n["truth"] for n in nights], se)
     n_samples = sum(1 for f, _ in all_rows if f["has_data"])
     summary = {"trained_at": datetime.now().isoformat(timespec="seconds"), "nights": k,
                "samples": n_samples, "features": se.FEATURES,
@@ -200,7 +226,7 @@ def main():
     better = sum_m >= sum_h
     if better:
         with open(MODEL_OUT, "wb") as f:
-            pickle.dump({"clf": clf, "features": se.FEATURES, "meta": summary}, f)
+            pickle.dump(dict(final, meta=summary), f)
         print(f"\n[✓] 모델 저장 → {MODEL_OUT}  ({k}밤, {n_samples}에폭) — sleep_estimate 가 자동 사용")
     else:
         if MODEL_OUT.exists():
