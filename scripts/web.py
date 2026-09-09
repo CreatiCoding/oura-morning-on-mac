@@ -210,11 +210,10 @@ select.date{flex:1;min-width:0;height:40px;border:1px solid var(--border);border
 .hero{font-size:52px;font-weight:800;letter-spacing:-1.5px;line-height:1}
 .hero small{font-size:17px;font-weight:600;color:var(--muted);letter-spacing:0}
 .sub{color:var(--muted);font-size:13px;margin-top:6px}
-.meter{height:12px;background:var(--accent-track);border-radius:6px;overflow:hidden;margin:14px 0 4px}
-.meter>i{display:block;height:100%;background:var(--accent);border-radius:6px;transition:width .4s}
-.qual{margin-top:10px;font-size:15px;font-weight:600}
-.src{margin-top:12px;font-size:12px;color:var(--ink2);background:var(--grid);border-radius:8px;padding:7px 10px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.qual{margin-top:12px;font-size:17px;font-weight:700}
+.src{font-size:12px;color:var(--ink2);background:var(--grid);border-radius:8px;padding:7px 10px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .src.cloud{background:#12261b;color:#7ee2a8}.src small{color:var(--muted)}
+.info{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
 /* 차트 */
 .ct{font-size:13px;color:var(--ink2);font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
 .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted);font-weight:500}
@@ -228,16 +227,13 @@ select.date{flex:1;min-width:0;height:40px;border:1px solid var(--border);border
 .axis{font-size:10px;fill:var(--muted);font-variant-numeric:tabular-nums}
 .ylab{font-size:10px;fill:var(--muted)}
 .empty{color:var(--muted);font-size:13px;padding:18px 0;text-align:center}
-/* KPI 타일 */
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.stat{background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:11px 13px}
-.stat .k{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:5px}
-.stat .k i{width:8px;height:8px;border-radius:2px;display:inline-block}
-.stat .v{font-size:20px;font-weight:700;margin-top:3px}
-.stat .t{font-size:11px;color:var(--muted);margin-top:2px;min-height:14px}
-.stat .d{font-size:11px;color:var(--ink2);margin-top:2px;min-height:14px}
-.mini{height:5px;background:var(--grid);border-radius:3px;overflow:hidden;margin-top:7px}
-.mini>i{display:block;height:100%;border-radius:3px;transition:width .4s}
+/* 단계 합계 한 줄 */
+.sum{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:12px;font-size:13px;color:var(--muted)}
+.sum span{display:inline-flex;align-items:center;gap:5px}.sum i{width:8px;height:8px;border-radius:2px;display:inline-block}.sum b{color:var(--ink);font-weight:700}
+/* 자세히(접기): 출처·비교·심박·표 */
+details.more{padding:0}details.more>summary{list-style:none;cursor:pointer;padding:14px 16px;font-size:14px;font-weight:600;color:var(--ink2);display:flex;justify-content:space-between}
+details.more>summary::-webkit-details-marker{display:none}details.more>summary::after{content:"▾";color:var(--muted)}details.more[open]>summary::after{content:"▴"}
+details.more>.body{padding:0 16px 16px;display:flex;flex-direction:column;gap:14px}
 /* 상태/버튼 */
 .status{padding:13px 15px;background:var(--surface2);border-radius:12px;border:1px solid var(--border);font-size:15px;line-height:1.4}
 .btn{display:block;width:100%;margin-top:12px;padding:14px;border:0;border-radius:12px;background:#238636;color:#fff;font-size:16px;font-weight:700;cursor:pointer;transition:background-color .15s}
@@ -253,7 +249,7 @@ th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--grid);color:
 @media (prefers-reduced-motion:reduce){*{transition:none !important}}
 </style></head><body>
 <div class="wrap">
-  <div class="hd"><h1>💤 WakeReady</h1><span class="tag" id="mode">—</span></div>
+  <div class="hd"><h1>💤 WakeReady</h1></div>
 
   <nav class="filters" aria-label="밤 선택">
     <div class="nav">
@@ -269,10 +265,8 @@ th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--grid);color:
 
   <section class="card" aria-label="수면 요약">
     <div class="hd"><span class="hero"><span id="hours">–</span><small id="target"></small></span><span class="live hidden" id="live">라이브</span></div>
-    <div class="sub" id="sub">&nbsp;</div>
-    <div class="meter" role="meter" aria-label="목표 수면 대비" id="meter"><i id="bar" style="width:0%"></i></div>
     <div class="qual" id="qual">&nbsp;</div>
-    <div class="src" id="src">출처 확인 중…</div>
+    <div class="sub" id="sub">&nbsp;</div>
   </section>
 
   <section class="card" aria-label="수면 단계">
@@ -281,20 +275,26 @@ th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--grid);color:
         <span><i style="background:var(--light)"></i>얕은</span><span><i style="background:var(--deep)"></i>깊은</span></span></div>
     <div class="chart" id="hypWrap"><svg id="hyp" tabindex="0" role="img" aria-label="5분 단위 수면 단계 차트"></svg><div class="tip" id="hypTip"></div></div>
     <div class="empty hidden" id="hypEmpty">이 밤에는 단계 데이터가 없어요.</div>
-    <div class="grid" id="tiles" style="margin-top:14px"></div>
-    <details class="tbl"><summary>표로 보기</summary><div class="tscroll"><table><thead><tr><th>시각</th><th>단계</th><th>심박</th><th>HRV</th></tr></thead><tbody id="tbody"></tbody></table></div></details>
-  </section>
-
-  <section class="card" id="hrCard" aria-label="심박수">
-    <div class="ct"><span>심박수 <small style="color:var(--muted);font-weight:500">bpm · 5분</small></span><span id="hrRange" class="legend"></span></div>
-    <div class="chart" id="hrWrap"><svg id="hr" tabindex="0" role="img" aria-label="5분 단위 심박수 차트"></svg><div class="tip" id="hrTip"></div></div>
-    <div class="empty hidden" id="hrEmpty">심박 데이터가 없어요.</div>
+    <div class="sum" id="sum"></div>
   </section>
 
   <section id="liveBox">
     <div class="status" id="status" aria-live="polite">연결 대기 중…</div>
     <button class="btn" id="sync" onclick="doSync()">🔄 지금 동기화</button>
   </section>
+
+  <details class="card more" id="more" aria-label="자세히"><summary>자세히 <small style="font-weight:500;color:var(--muted)">출처 · 비교 · 심박 · 표</small></summary>
+    <div class="body">
+      <div><div class="src" id="src">출처 확인 중…</div><div class="info" id="info"></div></div>
+      <div id="cmp" class="hidden"><div class="ct"><span>공식 기록 vs 로컬 추정</span></div><table><thead><tr><th>단계</th><th>공식</th><th>로컬</th><th>차이</th></tr></thead><tbody id="cmpBody"></tbody></table></div>
+      <div id="hrCard">
+        <div class="ct"><span>심박수 <small style="color:var(--muted);font-weight:500">bpm · 5분</small></span><span id="hrRange" class="legend"></span></div>
+        <div class="chart" id="hrWrap"><svg id="hr" tabindex="0" role="img" aria-label="5분 단위 심박수 차트"></svg><div class="tip" id="hrTip"></div></div>
+        <div class="empty hidden" id="hrEmpty">심박 데이터가 없어요.</div>
+      </div>
+      <details class="tbl"><summary>5분 표로 보기</summary><div class="tscroll"><table><thead><tr><th>시각</th><th>단계</th><th>심박</th><th>HRV</th></tr></thead><tbody id="tbody"></tbody></table></div></details>
+    </div>
+  </details>
 
   <div class="foot"><span id="meta"></span><span id="upd"></span></div>
 </div>
@@ -333,11 +333,10 @@ function render(){
   const T=st.target_hours||8;
   const h=(live&&st.hours!=null&&curSrc==='local'&&st.source==='local')?st.hours:v.total_sleep_hours;
   $('hours').textContent=h.toFixed(1);$('target').textContent=' / '+T+'h';
-  $('bar').style.width=Math.min(100,100*h/T)+'%';$('meter').setAttribute('aria-valuenow',h.toFixed(1));
   const bs=v.bedtime_start?v.bedtime_start.slice(11,16):'',be=v.bedtime_end?v.bedtime_end.slice(11,16):'';
   const KO={DEEP:'깊은수면',LIGHT:'얕은수면',REM:'REM 수면',WAKE:'깸'};
   const nowStage=(live&&curSrc==='local'&&st.estimate&&st.estimate.current_stage)?(' · 지금 '+(KO[st.estimate.current_stage]||st.estimate.current_stage)):'';
-  $('sub').textContent=((live&&curSrc==='local'&&h<T)?('목표까지 '+(T-h).toFixed(1)+'h 남음 · '):'')+'취침 '+bs+' → '+(be||'…')+(v.efficiency!=null?' · 효율 '+Math.round(v.efficiency)+'%':'')+nowStage;
+  $('sub').textContent=((live&&curSrc==='local'&&h<T)?('목표까지 '+(T-h).toFixed(1)+'h 남음 · '):'')+'취침 '+bs+' → '+(be||'…')+nowStage;
   const[ql,qc]=quality(v);$('qual').innerHTML='<span style="color:'+qc+'">'+ql+'</span>';
   $('live').classList.toggle('hidden',!live);
   const src=$('src');src.className='src'+(curSrc==='cloud'?' cloud':'');
@@ -346,29 +345,32 @@ function render(){
   a.textContent=curSrc==='cloud'?('☁️ Oura 공식 기록 · '+cur.day):('💍 로컬 추정 · '+(v.method==='model'?'개인화 모델':'휴리스틱')+(live?' · 마지막 동기화 기준':''));
   src.appendChild(a);
   if(other){const s=document.createElement('small');s.textContent=(curSrc==='cloud'?'로컬 추정':'공식 기록')+' 있음 → 위에서 전환';src.appendChild(s);}
-  renderTiles(v,other,curSrc);renderHyp(v);renderHR(v);renderTable(v);
+  const info=[];if(v.efficiency!=null)info.push('효율 '+Math.round(v.efficiency)+'%');
+  info.push(st.mode==='healthy'?('건강 수면 모드 · 목표 REM '+(st.rem_min_target||'?')+'분 · 깊은 '+(st.deep_min_target||'?')+'분'):('총 '+T+'h 모드'));
+  $('info').textContent=info.join(' · ');
+  renderSum(v);renderCmp(v,other,curSrc);renderHyp(v);
+  if($('more').open){renderHR(v);renderTable(v);}
   $('liveBox').classList.toggle('hidden',!live);
   $('meta').textContent=live?('상한 '+(st.cap_time||'')+(st.next_poll?' · 다음 '+st.next_poll:'')):'지난 밤 기록 · 실시간 아님';
   writeHash();
 }
 
-function renderTiles(v,other,srcName){
-  const box=$('tiles');box.textContent='';const healthy=st.mode==='healthy';
-  const rows=[['REM','rem_min','rem_pct',st.rem_min_target,25],['DEEP','deep_min','deep_pct',st.deep_min_target,20],['LIGHT','light_min','light_pct',null,60],['WAKE','awake_min',null,null,null]];
-  for(const[k,mk,pk,tg,norm]of rows){
-    const d=document.createElement('div');d.className='stat';
-    const kk=document.createElement('div');kk.className='k';const sw=document.createElement('i');sw.style.background=STAGE[k][1];kk.appendChild(sw);
-    kk.appendChild(document.createTextNode(k==='WAKE'?'깬 시간':STAGE[k][0]+(k==='REM'?' 수면':' 수면')));
-    const vv=document.createElement('div');vv.className='v';vv.textContent=v[mk]+'분';
-    const tt=document.createElement('div');tt.className='t';tt.textContent=pk?(healthy&&tg?('목표 '+tg+'분 · '+v[pk]+'%'):(v[pk]+'%')):'';
-    const dd=document.createElement('div');dd.className='d';
-    if(other){const same=Math.abs((other.end_unix||0)-(v.end_unix||0))<=1800;
-      if(same){const diff=v[mk]-other[mk];dd.textContent=(diff>=0?'+':'')+diff+'분 vs '+(srcName==='cloud'?'로컬 추정':'공식 기록');}
-      else dd.textContent=(srcName==='cloud'?'로컬은 ':'공식은 ')+(other.bedtime_end||'').slice(11,16)+'까지 기록';}
-    d.append(kk,vv,tt,dd);
-    if(norm){const m=document.createElement('div');m.className='mini';const i=document.createElement('i');i.style.background=STAGE[k][1];
-      i.style.width=Math.min(100,100*(healthy&&tg?v[mk]/tg:v[pk]/norm))+'%';m.appendChild(i);d.appendChild(m);}
-    box.appendChild(d);}
+const ROWS=[['REM','rem_min'],['DEEP','deep_min'],['LIGHT','light_min'],['WAKE','awake_min']];
+/* 차트 밑 한 줄: REM 118분 · 깊은 88분 · 얕은 312분 · 깸 124분 (건강 모드면 목표 병기) */
+function renderSum(v){
+  const box=$('sum');box.textContent='';const healthy=st.mode==='healthy';
+  for(const[k,mk]of ROWS){const sp=document.createElement('span');const i=document.createElement('i');i.style.background=STAGE[k][1];
+    const b=document.createElement('b');b.textContent=v[mk]+'분';const tg=healthy&&(k==='REM'?st.rem_min_target:k==='DEEP'?st.deep_min_target:null);
+    sp.append(i,document.createTextNode(STAGE[k][0]+' '),b);if(tg)sp.appendChild(document.createTextNode('/'+tg));box.appendChild(sp);}
+}
+/* 자세히 안: 같은 밤에 공식·로컬이 둘 다 있을 때만 단계별 비교표 */
+function renderCmp(v,other,srcName){
+  const box=$('cmp'),tb=$('cmpBody');tb.textContent='';
+  const same=other&&Math.abs((other.end_unix||0)-(v.end_unix||0))<=1800;
+  box.classList.toggle('hidden',!same);if(!same)return;
+  const cloud=srcName==='cloud'?v:other,local=srcName==='cloud'?other:v;
+  for(const[k,mk]of ROWS){const tr=document.createElement('tr');const d=local[mk]-cloud[mk];
+    for(const c of[STAGE[k][0],cloud[mk]+'분',local[mk]+'분',(d>=0?'+':'')+d+'분']){const td=document.createElement('td');td.textContent=c;tr.appendChild(td);}tb.appendChild(tr);}
 }
 
 /* ── 히프노그램: 연속 구간을 한 막대로, 구간 사이 2px 표면 간격, 시간축 1시간 눈금, 크로스헤어 툴팁 ── */
@@ -432,7 +434,6 @@ function renderTable(v){const tb=$('tbody');tb.textContent='';for(const e of(v.e
 async function loadNights(){try{const r=await fetch('/api/nights?_='+Date.now());if(!r.ok)throw 0;nights=(await r.json()).nights||[];render();}catch(_){}}
 async function tick(){
   try{const r=await fetch('/status.json?_='+Date.now());if(!r.ok)throw 0;st=await r.json();
-    $('mode').textContent=st.mode==='healthy'?'건강 수면 모드':('총 '+(st.target_hours||8)+'h 모드');
     const stale=(st.status||'').indexOf('지난')>=0;let s=(stale?'⏸️ ':'')+(st.status||'…');
     if(st.phase==='syncing'){s+=' <span class="ok">(동기화 중…)</span>';if((st.fails||0)>=2)s+='<br><span class="off">링 연결 실패 '+st.fails+'회 — 링 착용·맥 근처·아이폰 BT OFF 확인</span>';}
     $('status').innerHTML=s;$('upd').textContent='갱신 '+(st.updated||'').slice(11,19);
@@ -447,6 +448,7 @@ $('next').onclick=()=>{const i=nights.indexOf(cur);if(i>0){state.d=nights[i-1].d
 for(const b of document.querySelectorAll('.seg button'))b.onclick=()=>{state.s=b.dataset.src;render();};
 window.addEventListener('hashchange',()=>{parseHash();render();});
 window.addEventListener('resize',()=>{if(cur)render();});
+$('more').addEventListener('toggle',()=>{if(cur&&$('more').open)render();});
 parseHash();tick();loadNights();setInterval(tick,5000);setInterval(loadNights,30000);
 </script></body></html>
 """
