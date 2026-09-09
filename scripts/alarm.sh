@@ -26,13 +26,29 @@ END=$(( $(date +%s) + SECONDS_TO_RING ))
 sent=0
 
 send_imessage() {
-  osascript <<OSA 2>/dev/null
-tell application "Messages"
-  set svc to 1st account whose service type = iMessage
-  set b to participant "$1" of svc
-  send "$2" to b
-end tell
+  # 감시 타임아웃: launchd 에서 Messages 자동화 권한이 없으면 osascript 가 AppleEvent
+  # 기본 타임아웃(120초)까지 멈춤 → 알람 전체가 wakeready 의 300초 제한에 죽음(09-09 실측).
+  # 그래서 전송 1회는 IMESSAGE_SEND_TIMEOUT(기본 20초) 안에 끝내고, 넘기면 죽이고 실패 처리.
+  local to="${IMESSAGE_SEND_TIMEOUT:-20}"
+  osascript <<OSA >/dev/null 2>&1 &
+with timeout of $to seconds
+  tell application "Messages"
+    set svc to 1st account whose service type = iMessage
+    set b to participant "$1" of svc
+    send "$2" to b
+  end tell
+end timeout
 OSA
+  local pid=$! w=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$w" -ge "$to" ]; then
+      kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null
+      echo "    (osascript ${to}초 초과 — Messages 자동화 권한/로그인 확인 필요)"
+      return 1
+    fi
+    sleep 1; w=$((w + 1))
+  done
+  wait "$pid"
 }
 
 ack_seen() {  # $1=since(unix). 아이폰 단축어가 보낸 PLAYED 신호 수신 여부
@@ -112,8 +128,10 @@ if [ "$METHOD" = "none" ] && [ "$LOCAL_SOUND" != "1" ]; then
   echo "  ⚠️ 아이폰 알림수단(iMessage/Pushcut/ntfy) 미설정 — 울릴 곳이 없음. .env 확인 필요."
 fi
 
-# 반복 발송
+# 반복 발송. iMessage 단계가 오래 걸렸어도 폴백 푸시는 반드시 자기 시간(FALLBACK_SECONDS)을
+# 갖는다. (이전엔 시작 시각 기준 END 를 써서 iMessage 에 120초 이상 쓰면 푸시가 0회였음)
 if [ "$METHOD" != "local" ] && [ "$METHOD" != "none" ]; then
+  END=$(( $(date +%s) + ${FALLBACK_SECONDS:-90} ))
   while [ "$(date +%s)" -lt "$END" ]; do
     sent=$((sent + 1))
     if [ "$METHOD" = "Pushcut" ]; then push_pushcut "$REASON (#$sent)" || true
