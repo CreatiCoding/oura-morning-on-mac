@@ -573,6 +573,36 @@ def local_night_latest(db):
     return _night_row_to_summary(row) if row else None
 
 
+def nights_overview(db, min_hours=1.0, limit=60):
+    """웹 날짜 이동용: 밤별로 cloud/local 요약 + 5분 에폭 시계열을 한 번에.
+    같은 밤(시작 ±15분)의 두 출처를 한 항목으로 묶는다. 최신 밤이 앞."""
+    try:
+        con = _connect(db)
+        rows = con.execute(
+            "SELECT source,night_start_unix,night_end_unix,day,method,total_sleep_sec,rem_sec,deep_sec,"
+            "light_sec,awake_sec,efficiency,hypnogram FROM wr_sleep_nights "
+            "WHERE total_sleep_sec>=? OR source='local' ORDER BY night_start_unix DESC LIMIT ?",
+            (min_hours * 3600, limit * 2)).fetchall()
+        nights = []
+        for r in rows:
+            summ = _night_row_to_summary(r)
+            eps = con.execute(
+                "SELECT ts_unix,stage,hr,rmssd,motion,temp FROM wr_sleep_epochs "
+                "WHERE source=? AND night_start_unix=? ORDER BY epoch_idx", (r[0], r[1])).fetchall()
+            summ["epochs"] = [{"t": e[0], "s": e[1], "hr": e[2], "rmssd": e[3], "mo": e[4], "temp": e[5]}
+                              for e in eps]
+            summ["start_unix"] = r[1]; summ["end_unix"] = r[2]
+            for n in nights:
+                if abs(n["start_unix"] - r[1]) <= 900:
+                    n[r[0]] = summ; n["start_unix"] = min(n["start_unix"], r[1]); break
+            else:
+                nights.append({"start_unix": r[1], "day": r[3], r[0]: summ})
+        con.close()
+    except Exception:
+        return []
+    return nights[:limit]
+
+
 def estimate_and_store(db):
     """오늘 밤 수면창 추정 → summarize 결과(+source/method) 반환하고 wr_ 테이블에도 저장.
     wakeready/web 이 쓰는 단일 진입점. 실패 시 None."""
