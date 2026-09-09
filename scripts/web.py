@@ -209,8 +209,8 @@ select.date{flex:1;min-width:0;height:40px;border:1px solid var(--border);border
 /* 헤드라인 */
 .hero{font-size:52px;font-weight:800;letter-spacing:-1.5px;line-height:1}
 .hero small{font-size:17px;font-weight:600;color:var(--muted);letter-spacing:0}
-.sub{color:var(--muted);font-size:13px;margin-top:6px}
-.qual{margin-top:12px;font-size:17px;font-weight:700}
+.sub{color:var(--muted);font-size:13px;margin-top:6px;line-height:17px}
+.qual{margin-top:12px;font-size:17px;font-weight:700;line-height:27px}  /* 이모지 포함 줄 높이 고정 → 로드 전후 레이아웃 시프트 방지 */
 .src{font-size:12px;color:var(--ink2);background:var(--grid);border-radius:8px;padding:7px 10px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .src.cloud{background:#12261b;color:#7ee2a8}.src small{color:var(--muted)}
 .info{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
@@ -218,8 +218,9 @@ select.date{flex:1;min-width:0;height:40px;border:1px solid var(--border);border
 .ct{font-size:13px;color:var(--ink2);font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
 .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted);font-weight:500}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
-.chart{position:relative}
-.chart svg{display:block;width:100%;height:auto;outline:none;touch-action:pan-y}
+/* 차트 높이 고정: 데이터 전 빈 svg 가 기본 비율(2:1)로 커졌다가 줄어드는 시프트 방지. 값은 renderHyp/renderHR 의 H 와 같아야 함 */
+.chart{position:relative}#hypWrap{height:102px}#hrWrap{height:94px}
+.chart svg{display:block;width:100%;height:100%;outline:none;touch-action:pan-y}
 .chart svg:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
 .tip{position:absolute;top:0;left:0;pointer-events:none;background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:6px 9px;
  font-size:12px;line-height:1.35;color:var(--ink2);white-space:nowrap;opacity:0;transition:opacity .12s;transform:translate(-50%,0)}
@@ -228,7 +229,7 @@ select.date{flex:1;min-width:0;height:40px;border:1px solid var(--border);border
 .ylab{font-size:10px;fill:var(--muted)}
 .empty{color:var(--muted);font-size:13px;padding:18px 0;text-align:center}
 /* 단계 합계 한 줄 */
-.sum{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:12px;font-size:13px;color:var(--muted)}
+.sum{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:12px;font-size:13px;line-height:17px;min-height:17px;color:var(--muted)}
 .sum span{display:inline-flex;align-items:center;gap:5px}.sum i{width:8px;height:8px;border-radius:2px;display:inline-block}.sum b{color:var(--ink);font-weight:700}
 /* 자세히(접기): 출처·비교·심박·표 */
 details.more{padding:0}details.more>summary{list-style:none;cursor:pointer;padding:14px 16px;font-size:14px;font-weight:600;color:var(--ink2);display:flex;justify-content:space-between}
@@ -238,7 +239,7 @@ details.more>.body{padding:0 16px 16px;display:flex;flex-direction:column;gap:14
 .status{padding:13px 15px;background:var(--surface2);border-radius:12px;border:1px solid var(--border);font-size:15px;line-height:1.4}
 .btn{display:block;width:100%;margin-top:12px;padding:14px;border:0;border-radius:12px;background:#238636;color:#fff;font-size:16px;font-weight:700;cursor:pointer;transition:background-color .15s}
 .btn:hover{background:#2ea043}.btn:disabled{background:var(--border);color:var(--muted)}
-.foot{color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px}
+.foot{color:var(--muted);font-size:12px;line-height:16px;min-height:16px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px}
 .off{color:var(--bad)}.ok{color:var(--good)}
 details.tbl{margin-top:10px}details.tbl summary{font-size:12px;color:var(--muted);cursor:pointer;padding:6px 0}
 table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums;margin-top:6px}
