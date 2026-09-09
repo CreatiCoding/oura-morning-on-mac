@@ -147,4 +147,15 @@ python3 scripts/oura_oauth.py
 ```bash
 sqlite3 data/oura.db "select source,day,method,rem_sec/60,deep_sec/60,awake_sec/60 from wr_sleep_nights order by night_start_unix"
 ```
+
+### 원격 읽기 전용 뷰 (tools.creco.dev/wakeready)
+맥이 밀어 올리고 서버는 보여주기만 한다. 서버가 죽어도 알람에는 영향 없음.
+- 맥: `scripts/push_snapshot.py`가 밤별 공식/로컬 요약 + 5분 에폭 + 세션 상태(약 100KB, 링 원본 제외)를
+  `WAKEREADY_PUSH_URL`로 POST. launchd `com.wakeready.push`가 5분마다, 야간 폴링 성공 직후에도 한 번.
+  `.env`에 `WAKEREADY_PUSH_URL`/`WAKEREADY_PUSH_TOKEN`이 없으면 아무것도 안 함. 로그는 `logs/push.out`.
+- 서버: `CreatiCoding/tools.creco.dev` 저장소의 `services/web/src/app/wakeready/`. Dokploy `tools.creco.dev` 앱에
+  볼륨 `/data`와 환경변수 `WAKEREADY_PUSH_TOKEN`, `WAKEREADY_DATA_DIR`가 설정돼 있고 main 푸시 시 자동 배포.
+- UI 원본은 `web.py` 하나다. 화면을 바꾸면 `python3 scripts/export_readonly_ui.py <tools repo>/services/web/src/app/wakeready/ui.ts`
+  로 다시 내보내서 그쪽에 커밋한다(동기화 버튼 제거·주소 치환은 스크립트가 함).
+- 보기는 공개, 적재만 토큰 보호. 토큰 교체 시 Dokploy 환경변수와 `.env` 둘 다 바꾸고 재배포.
 - 밤이 쌓일수록 정확해진다. 현재 휴리스틱(B)은 총·얕은수면·깬시간은 근접하나 REM↔깊은수면 구분이 약함 → 이 모델이 보완.

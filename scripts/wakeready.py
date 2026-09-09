@@ -207,6 +207,17 @@ def poll_window(deadline):
     return None
 
 
+def push_snapshot_async():
+    """push_snapshot.py 를 백그라운드로(폴링 루프를 막지 않게). .env 에 WAKEREADY_PUSH_URL 없으면 즉시 종료됨."""
+    if SIMULATE_HOURS is not None or DRY_RUN:
+        return
+    try:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "push_snapshot.py")],
+                         stdout=open(LOG_DIR / "push.out", "a"), stderr=subprocess.STDOUT)
+    except Exception:
+        pass
+
+
 def estimate_stages():
     """sleep_estimate 로 REM/깊은수면 추정. 실패 시 None."""
     try:
@@ -455,6 +466,7 @@ def do_poll(deadline):
         return None, None, None
     # 수면단계 추정은 모드와 무관하게 항상 계산해서 웹/TUI 에 표시(DB 만 읽음, 링 통신 없음).
     est = estimate_stages()
+    push_snapshot_async()   # 원격 읽기 전용 뷰(tools.creco.dev/wakeready) 갱신, 설정 없으면 no-op
     # 헤드라인/판정의 '총 수면'을 실제 잔 시간(깬시간 제외)으로 바꾸는 건 건강모드에서만.
     # 총시간 모드는 기존대로 bedtime_period 기준을 유지해 판정이 바뀌지 않게 한다.
     if HEALTHY_MODE and est and est.get("total_sleep_hours"):

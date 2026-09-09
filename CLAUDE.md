@@ -25,6 +25,7 @@
 - `scripts/alarm.sh` — iMessage 트리거(+ntfy ACK 확인·폴백). 맥 스피커는 기본 off.
 - `scripts/web.py` — stdlib 웹서버. status.json 표시 + "지금 동기화" 버튼(→sync_request 플래그).
 - `scripts/_qr.py` — 접속 QR(터미널). `scripts/setup.sh` — open_oura 빌드.
+- `scripts/push_snapshot.py` — 읽기 전용 스냅샷을 `tools.creco.dev/wakeready` 로 적재(5분 launchd + 폴링 직후). `scripts/export_readonly_ui.py` — web.py UI 를 그쪽 저장소용 TS 로 내보냄. 상세는 USAGE.md '원격 읽기 전용 뷰'.
 - `.env`(gitignore) — 모든 설정/비밀. `.env.example` 참고.
 - **DB 3계층**(모두 `data/oura.db`): `events` = 링 원본(raw, open_oura 가 씀) /
   `wr_sleep_nights`·`wr_sleep_epochs` = 정규화된 밤·5분 에폭, `source='local'`(맥 추정, method=model|heuristic)
@@ -50,7 +51,7 @@
   상태변경·파괴 명령은 **절대 실행 금지**. sync/sleep-analyze/info/latest 등 읽기만.
 - **비밀/건강데이터 커밋 금지**: `.env`, `key.hex`, `*.hex`, `data/`, `logs/` 는 `.gitignore` 처리됨.
   커밋 전 diff에 auth_key(hex 32자)·전화번호·Apple ID·시리얼·MAC·IP가 없는지 확인.
-- 외부 전송은 알람 트리거(iMessage/ntfy)뿐. 그 외 건강데이터는 맥 로컬에만.
+- 외부 전송은 알람 트리거(iMessage/ntfy)와 **본인 서버(tools.creco.dev)로의 정규화 요약 적재**(2026-09-09 사용자 결정, 공개 열람 허용)뿐. 링 원본(raw)은 맥 로컬에만.
 
 ## 알아두면 좋은 함정 (이미 코드에 반영됨)
 - **BLE 연속 재연결 취약**: `sleep-analyze` 직후 곧바로 `sync` 하면 재광고 전이라 실패.
