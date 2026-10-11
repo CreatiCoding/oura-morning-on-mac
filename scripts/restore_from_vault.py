@@ -2,12 +2,13 @@
 """Vault(wakeready/credentials)에서 인증정보를 받아 .env + key.hex 재구성.
 
 새 기기(맥미니)에서 클론 후 1회 실행하면 비밀 설정이 복구된다.
-토큰: 환경변수 VAULT_TOKEN(+VAULT_ADDR) 우선, 없으면 ~/.claude/.mcp.json 의 vault 서버 args.
+토큰: 환경변수 VAULT_TOKEN(+VAULT_ADDR) 우선, 없으면 `aisync vault token`, 그다음 옛 MCP 설정의 vault 서버 args.
 
 사용: python3 scripts/restore_from_vault.py
 """
 import json
 import os
+import subprocess
 import urllib.request
 from pathlib import Path
 
@@ -23,11 +24,20 @@ def get_token_addr():
     addr = os.environ.get("VAULT_ADDR", DEFAULT_ADDR)
     if tok:
         return tok, addr
-    # MCP 설정에서 추출
+    # aisync 가 가진 Vault 로그인(토큰 교체는 여기 한 곳)
+    try:
+        r = subprocess.run([str(Path.home() / ".local/bin/aisync"), "vault", "token"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip(), addr
+    except FileNotFoundError:
+        pass
+    # 옛 MCP 설정에서 추출(평문 토큰이 남아 있는 기기용)
     for p in [Path.home() / ".claude" / ".mcp.json", Path.home() / ".claude.json"]:
         try:
             args = json.load(open(p))["mcpServers"]["vault"]["args"]
             tok = next(x.split("=", 1)[1] for x in args if x.startswith("VAULT_TOKEN="))
+            if "{{" in tok:  # aisync 참조이지 토큰이 아님
+                continue
             a = next((x.split("=", 1)[1] for x in args if x.startswith("VAULT_ADDR=")), addr)
             return tok, a
         except Exception:
